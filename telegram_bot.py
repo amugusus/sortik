@@ -1,9 +1,10 @@
+import os
 import re
 import urllib.parse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "7459938900:AAGyV8yvIuRCrEOwLnpZKuPDB95ON_TdaQ4"
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Load token from environment variable
 MINI_APP_URL = "https://sortik.app/?add=true"
 
 URL_REGEX = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
@@ -35,6 +36,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Пожалуйста, отправьте корректную ссылку.")
 
 def main():
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN environment variable not set")
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
