@@ -17,19 +17,7 @@ CACHE_FILE = "web_cache.pkl"
 # Dictionary to store cache: {user_id: {url: {content: str, timestamp: datetime}}}
 cache: Dict[int, Dict[str, Dict[str, Any]]] = {}
 
-async def fetch_website_content(url: str) -> str:
-    """Fetch website content asynchronously."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as response:
-                if response.status == 200:
-                    return await response.text()
-                else:
-                    return f"Error: Failed to fetch content (status {response.status})"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-async def load_cache():
+def load_cache():
     """Load cache from file if it exists."""
     global cache
     try:
@@ -46,6 +34,18 @@ async def save_cache():
             pickle.dump(cache, f)
     except Exception as e:
         print(f"Error saving cache: {e}")
+
+async def fetch_website_content(url: str) -> str:
+    """Fetch website content asynchronously."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    return await response.text()
+                else:
+                    return f"Error: Failed to fetch content (status {response.status})"
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
@@ -118,9 +118,8 @@ def main():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN environment variable not set")
     
-    # Load cache at startup
-    import asyncio
-    asyncio.run(load_cache())
+    # Load cache at startup (synchronously)
+    load_cache()
     
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
