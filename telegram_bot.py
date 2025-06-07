@@ -3,7 +3,7 @@ import re
 import urllib.parse
 from typing import Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import aiohttp
 from datetime import datetime
 import sqlite3
@@ -115,9 +115,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shared_url = urls[0]
     user_cache = load_cache(user_id)
 
-    if shared_url not in user_cache:
+    if shared_url in user_cache:
+        timestamp = user_cache[shared_url]['timestamp']
+        await update.message.reply_text(f"Кеш найден (от {timestamp}).")
+    else:
         html_content, resources = await fetch_website_content(shared_url)
         await save_cache(user_id, shared_url, html_content, resources)
+        await update.message.reply_text("Сайт успешно загружен и сохранен в кеш.")
 
     categories = {
         "News": "blue",
@@ -133,37 +137,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         full_payload = f"{shared_url}|{category}|{color}"
         encoded = urllib.parse.quote(full_payload, safe='')
         button_url = f"https://sortik.app/?uploadnew={encoded}"
-        row.append(InlineKeyboardButton(category, web_app={"url": button_url}, callback_data=f"clean_{user_id}_{update.message.message_id}"))
+        row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
         if idx % 3 == 0 or idx == len(categories):
             buttons.append(row)
             row = []
 
     reply_markup = InlineKeyboardMarkup(buttons)
 
-    context.user_data['last_user_message_id'] = update.message.message_id
-    sent_message = await update.message.reply_text(
+    await update.message.reply_text(
         f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
         reply_markup=reply_markup
     )
-    context.user_data['last_bot_message_id'] = sent_message.message_id
-
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data.startswith("clean_"):
-        try:
-            user_id, user_message_id = map(int, query.data.split("_")[1:])
-            bot_message_id = context.user_data.get('last_bot_message_id')
-            
-            if bot_message_id:
-                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=bot_message_id)
-            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=user_message_id)
-            
-            context.user_data.pop('last_user_message_id', None)
-            context.user_data.pop('last_bot_message_id', None)
-        except Exception as e:
-            print(f"Error deleting messages: {e}")
 
 async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -193,7 +177,6 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("view_cache", view_cache))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(handle_button))
 
     print("Бот запущен...")
     application.run_polling()
