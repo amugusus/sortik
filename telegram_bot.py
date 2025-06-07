@@ -9,6 +9,7 @@ from datetime import datetime
 import sqlite3
 from pathlib import Path
 from bs4 import BeautifulSoup
+import json
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # Load token from environment variable
 MINI_APP_URL = "https://sortik.app/?add=true"
@@ -111,47 +112,49 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     await update.message.reply_text(
-        "Отправьте ссылку на сайт, и я сохраню ее кэш (HTML и ресурсы), связанный с вашим аккаунтом. "
-        "Мини-приложение получит доступ к кэшу. Используйте /view_cache, чтобы посмотреть кэш."
+        "Отправьте ссылку на сайт, и над строкой ввода появится кнопка 'Открыть в мини-приложении'. "
+        "Я также сохраню кэш (HTML и ресурсы), связанный с вашим аккаунтом. "
+        "Используйте /view_cache, чтобы посмотреть кэш."
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming messages with URLs."""
+    """Handle incoming messages with URLs and show inline button above input."""
     user_id = update.effective_user.id
     message_text = update.message.text
     urls = re.findall(URL_REGEX, message_text)
 
-    if urls:
-        shared_url = urls[0]
-        # Load user-specific cache from database
-        user_cache = load_cache(user_id)
-
-        # Check if URL is already in cache
-        if shared_url in user_cache:
-            html_content = user_cache[shared_url]['html_content']
-            timestamp = user_cache[shared_url]['timestamp']
-            await update.message.reply_text(f"Кеш найден (от {timestamp}): {html_content[:200]}...")
-
-        else:
-            # Fetch and cache website content and resources
-            html_content, resources = await fetch_website_content(shared_url)
-            await save_cache(user_id, shared_url, html_content, resources)
-            await update.message.reply_text(f"Сайт загружен и сохранен в кеш: {html_content[:200]}...")
-
-        # Create button for mini app, passing user_id for cache sync
-        encoded_url = urllib.parse.quote(shared_url, safe='')
-        mini_app_link = f"{MINI_APP_URL}&url={encoded_url}&user_id={user_id}"
-        keyboard = [
-            [InlineKeyboardButton("Открыть мини-приложение", web_app={"url": mini_app_link})]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            f"Ссылка найдена: {shared_url}\nНажмите кнопку ниже для открытия в мини-приложении:",
-            reply_markup=reply_markup
-        )
-    else:
+    if not urls:
         await update.message.reply_text("Пожалуйста, отправьте корректную ссылку.")
+        return
+
+    shared_url = urls[0]
+    # Load user-specific cache from database
+    user_cache = load_cache(user_id)
+
+    # Check if URL is already in cache
+    if shared_url in user_cache:
+        html_content = user_cache[shared_url]['html_content']
+        timestamp = user_cache[shared_url]['timestamp']
+        await update.message.reply_text(f"Кеш найден (от {timestamp}): {html_content[:200]}...")
+    else:
+        # Fetch and cache website content and resources
+        html_content, resources = await fetch_website_content(shared_url)
+        await save_cache(user_id, shared_url, html_content, resources)
+        await update.message.reply_text(f"Сайт загружен и сохранен в кеш: {html_content[:200]}...")
+
+    # Create inline button to appear above input for mini app
+    encoded_url = urllib.parse.quote(shared_url, safe='')
+    mini_app_link = f"{MINI_APP_URL}&url={encoded_url}&user_id={user_id}"
+    keyboard = [
+        [InlineKeyboardButton("Открыть в мини-приложении", web_app={"url": mini_app_link})]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Send a message with the button that appears above the input field
+    await update.message.reply_text(
+        "Нажмите кнопку выше, чтобы открыть ссылку в мини-приложении:",
+        reply_markup=reply_markup
+    )
 
 async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display cached website content for the user."""
