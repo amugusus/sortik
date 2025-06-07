@@ -1,175 +1,128 @@
 import os
-import re
+import reAdd commentMore actions
 import urllib.parse
+import json
+import pickle
 from typing import Dict, Any
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import aiohttp
 from datetime import datetime
-import sqlite3
-from pathlib import Path
-from bs4 import BeautifulSoup
-import json
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Load token from environment variable
 MINI_APP_URL = "https://sortik.app/?add=true"
-URL_REGEX = r'https?://[\S]+'
-DB_FILE = "web_cache.db"
-CATEGORY_COLORS = ['red', 'blue', 'green', 'yellow', 'purple', 'pink', 'indigo', 'gray']
-DEFAULT_CATEGORIES = ["News", "Tech", "Fun", "Sport", "Music"]
 
-user_state = {}
+URL_REGEX = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
+CACHE_FILE = "web_cache.pkl"
 
-# Initialize SQLite database
-def init_db():
-    db_path = Path(DB_FILE)
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS cache (
-            user_id INTEGER,
-            url TEXT,
-            html_content TEXT,
-            resources TEXT,
-            timestamp TEXT,
-            PRIMARY KEY (user_id, url)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# Dictionary to store cache: {user_id: {url: {content: str, timestamp: datetime}}}
+cache: Dict[int, Dict[str, Dict[str, Any]]] = {}
 
-def load_cache(user_id: int) -> Dict[str, Dict[str, Any]]:
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute('SELECT url, html_content, resources, timestamp FROM cache WHERE user_id = ?', (user_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return {
-            row[0]: {
-                'html_content': row[1],
-                'resources': json.loads(row[2]) if row[2] else {},
-                'timestamp': datetime.fromisoformat(row[3])
-            } for row in rows
-        }
-    except Exception as e:
-        print(f"Error loading cache: {e}")
-        return {}
-
-async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[str, str]):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        timestamp = datetime.now().isoformat()
-        resources_json = json.dumps(resources)
-        cursor.execute('''
-            INSERT OR REPLACE INTO cache (user_id, url, html_content, resources, timestamp)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, url, html_content, resources_json, timestamp))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Error saving cache: {e}")
-
-async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
+async def fetch_website_content(url: str) -> str:
+    """Fetch website content asynchronously."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as response:
-                if response.status != 200:
-                    return f"Error: Failed to fetch content (status {response.status})", {}
-                html_content = await response.text()
-
-            soup = BeautifulSoup(html_content, 'html.parser')
-            resources = {}
-            return html_content, resources
+                if response.status == 200:
+                    return await response.text()
+                else:
+                    return f"Error: Failed to fetch content (status {response.status})"
     except Exception as e:
-        return f"Error: {str(e)}", {}
+        return f"Error: {str(e)}"
+
+async def load_cache():
+    """Load cache from file if it exists."""
+    global cache
+    try:
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, 'rb') as f:
+                cache = pickle.load(f)
+    except Exception as e:
+        print(f"Error loading cache: {e}")
+
+async def save_cache():
+    """Save cache to file."""
+    try:
+        with open(CACHE_FILE, 'wb') as f:
+            pickle.dump(cache, f)
+    except Exception as e:
+        print(f"Error saving cache: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command."""
     await update.message.reply_text(
-        "Отправьте ссылку для категоризации и сохранения."
+        "Отправьте ссылку на видео, и я открою мини-приложение с этой ссылкой."
+        "Отправьте ссылку на видео или сайт, и я открою мини-приложение с этой ссылкой. "
+        "Используйте /view_cache, чтобы посмотреть сохраненный кеш."
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming messages with URLs."""
     user_id = update.effective_user.id
     message_text = update.message.text
     urls = re.findall(URL_REGEX, message_text)
 
-    if not urls:
+    if urls:
+        shared_url = urls[0]
+        encoded_url = urllib.parse.quote(shared_url, safe='')
+
+        # Initialize user cache if not exists
+        if user_id not in cache:
+            cache[user_id] = {}
+
+        # Check if URL is already in cache
+        if shared_url in cache[user_id]:
+            content = cache[user_id][shared_url]['content']
+            timestamp = cache[user_id][shared_url]['timestamp']
+            await update.message.reply_text(f"Кеш найден (от {timestamp}): {content[:200]}...")
+
+        else:
+            # Fetch and cache website content
+            content = await fetch_website_content(shared_url)
+            cache[user_id][shared_url] = {
+                'content': content,
+                'timestamp': datetime.now()
+            }
+            await save_cache()
+            await update.message.reply_text(f"Сайт загружен и сохранен в кеш: {content[:200]}...")
+
+        # Create button for mini app
+        mini_app_link = f"{MINI_APP_URL}&url={encoded_url}"
+        
+        keyboard = [
+            [InlineKeyboardButton("Открыть мини-приложение", web_app={"url": mini_app_link})]
+        ]
+@@ -35,11 +98,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    else:
         await update.message.reply_text("Пожалуйста, отправьте корректную ссылку.")
+
+async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display cached website content for the user."""
+    user_id = update.effective_user.id
+    if user_id not in cache or not cache[user_id]:
+        await update.message.reply_text("Кеш пуст.")
         return
 
-    url = urls[0]
-    user_state[user_id] = {"url": url}
-
-    keyboard = [[InlineKeyboardButton("+", callback_data="add_category")]] + [
-        [InlineKeyboardButton(cat, callback_data=f"select_category|{cat}|gray")]
-        for cat in DEFAULT_CATEGORIES
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(
-        f"Получена ссылка: {url}\nВыберите категорию:",
-        reply_markup=reply_markup
-    )
-    user_state[user_id]["bot_message_id"] = update.message.message_id
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-
-    data = query.data
-
-    if data == "add_category":
-        user_state[user_id]["awaiting_new_category"] = True
-        await query.message.delete()
-        await query.message.reply_text("Введите название новой категории:")
-    elif data.startswith("select_category"):
-        _, category, color = data.split("|")
-        url = user_state[user_id]["url"]
-        html_content, _ = await fetch_website_content(url)
-        title = BeautifulSoup(html_content, 'html.parser').title
-        title_text = title.string.strip() if title else "Без названия"
-
-        description = html_content[:100].strip().replace("\n", " ")
-
-        encoded_data = urllib.parse.quote(f"{url}|{title_text}|{description}|{category}|{color}")
-        link = f"https://sortik.app/?uploadnew={encoded_data}"
-
-        await query.message.delete()
-        await context.bot.delete_message(chat_id=query.message.chat_id, message_id=user_state[user_id].get("bot_message_id"))
-        await context.bot.send_message(chat_id=query.message.chat_id, text=f"Открыть: {link}")
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in user_state and user_state[user_id].get("awaiting_new_category"):
-        category = update.message.text.strip()
-        user_state[user_id]["new_category"] = category
-        user_state[user_id].pop("awaiting_new_category")
-
-        keyboard = [[InlineKeyboardButton(color, callback_data=f"select_category|{category}|{color}")]
-                    for color in CATEGORY_COLORS]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.delete()
-        await update.message.reply_text("Выберите цвет категории:", reply_markup=reply_markup)
-
+    response = "Сохраненный кеш:\n"
+    for url, data in cache[user_id].items():
+        timestamp = data['timestamp']
+        content_preview = data['content'][:100] + "..." if len(data['content']) > 100 else data['content']
+        response += f"URL: {url}\nВремя: {timestamp}\nКонтент: {content_preview}\n\n"
+    
+    await update.message.reply_text(response)
 
 def main():
+    """Main function to run the bot."""
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN environment variable not set")
-
-    init_db()
-
+    
+    # Load cache at startup
+    import asyncio
+    asyncio.run(load_cache())
+    
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(CommandHandler("view_cache", view_cache))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
     print("Бот запущен...")
     application.run_polling()
-
-if __name__ == "__main__":
-    main()
