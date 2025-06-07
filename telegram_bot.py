@@ -135,7 +135,7 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
         return f"Error: {str(e)}", {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    await update.message.geply_text(
         "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
         "HTML и ресурсы сайта будут сохранены в кеш."
     )
@@ -316,11 +316,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callback))
 
     print("Бот запущен...")
-    try:
-        application.run_polling()
-    except Exception as e:
-        print(f"Ошибка при запуске бота: {e}")
-        raise
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
