@@ -1,169 +1,175 @@
 import os
 import re
 import urllib.parse
-from collections import defaultdict
-from typing import Dict, List
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.constants import ParseMode
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-    ContextTypes,
-)
+from typing import Dict, Any
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import aiohttp
+from datetime import datetime
+import sqlite3
+from pathlib import Path
+from bs4 import BeautifulSoup
+import json
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-URL_REGEX = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
+MINI_APP_URL = "https://sortik.app/?add=true"
+URL_REGEX = r'https?://[\S]+'
+DB_FILE = "web_cache.db"
+CATEGORY_COLORS = ['red', 'blue', 'green', 'yellow', 'purple', 'pink', 'indigo', 'gray']
+DEFAULT_CATEGORIES = ["News", "Tech", "Fun", "Sport", "Music"]
 
-# Временное хранилище
-user_states = defaultdict(dict)
+user_state = {}
 
-# Предустановленные категории
-default_categories = [
-    {"name": "News", "color": "blue"},
-    {"name": "Tech", "color": "green"},
-    {"name": "Fun", "color": "pink"},
-    {"name": "Sport", "color": "red"},
-    {"name": "Music", "color": "purple"},
-]
+# Initialize SQLite database
+def init_db():
+    db_path = Path(DB_FILE)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cache (
+            user_id INTEGER,
+            url TEXT,
+            html_content TEXT,
+            resources TEXT,
+            timestamp TEXT,
+            PRIMARY KEY (user_id, url)
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-COLOR_CHOICES = ['red', 'blue', 'green', 'yellow', 'purple', 'pink', 'indigo', 'gray']
+def load_cache(user_id: int) -> Dict[str, Dict[str, Any]]:
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT url, html_content, resources, timestamp FROM cache WHERE user_id = ?', (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return {
+            row[0]: {
+                'html_content': row[1],
+                'resources': json.loads(row[2]) if row[2] else {},
+                'timestamp': datetime.fromisoformat(row[3])
+            } for row in rows
+        }
+    except Exception as e:
+        print(f"Error loading cache: {e}")
+        return {}
 
+async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[str, str]):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        timestamp = datetime.now().isoformat()
+        resources_json = json.dumps(resources)
+        cursor.execute('''
+            INSERT OR REPLACE INTO cache (user_id, url, html_content, resources, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user_id, url, html_content, resources_json, timestamp))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error saving cache: {e}")
 
-def get_category_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    user_data = user_states.get(user_id, {})
-    custom_categories = user_data.get("custom_categories", [])
-    categories = custom_categories + default_categories
-    keyboard = [[InlineKeyboardButton(cat["name"], callback_data=f"cat:{cat['name']}") for cat in categories]]
-    keyboard.append([InlineKeyboardButton("+", callback_data="add_category")])
-    return InlineKeyboardMarkup(keyboard)
+async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                if response.status != 200:
+                    return f"Error: Failed to fetch content (status {response.status})", {}
+                html_content = await response.text()
 
-
-def get_color_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(color, callback_data=f"color:{color}")]
-        for color in COLOR_CHOICES
-    ])
-
+            soup = BeautifulSoup(html_content, 'html.parser')
+            resources = {}
+            return html_content, resources
+    except Exception as e:
+        return f"Error: {str(e)}", {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Отправьте ссылку, и я помогу вам выбрать категорию.")
-
+    await update.message.reply_text(
+        "Отправьте ссылку для категоризации и сохранения."
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     message_text = update.message.text
     urls = re.findall(URL_REGEX, message_text)
 
-    # Если пользователь в режиме создания новой категории — перенаправим в другой хендлер
-    if user_states.get(user_id, {}).get("stage") == "awaiting_new_category":
-        await handle_new_category_name(update, context)
-        return
-
     if not urls:
         await update.message.reply_text("Пожалуйста, отправьте корректную ссылку.")
         return
 
-    shared_url = urls[0]
-    user_states[user_id] = {
-        "url": shared_url,
-        "message_id": update.message.message_id,
-        "stage": "choosing_category"
-    }
+    url = urls[0]
+    user_state[user_id] = {"url": url}
+
+    keyboard = [[InlineKeyboardButton("+", callback_data="add_category")]] + [
+        [InlineKeyboardButton(cat, callback_data=f"select_category|{cat}|gray")]
+        for cat in DEFAULT_CATEGORIES
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        f"Вы прислали ссылку:\n{shared_url}\n\nВыберите категорию:",
-        reply_markup=get_category_keyboard(user_id)
+        f"Получена ссылка: {url}\nВыберите категорию:",
+        reply_markup=reply_markup
     )
-
-
-async def handle_new_category_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    new_cat_name = update.message.text.strip()
-    if not new_cat_name:
-        await update.message.reply_text("Название категории не может быть пустым.")
-        return
-
-    user_states[user_id]["new_category_name"] = new_cat_name
-    user_states[user_id]["stage"] = "awaiting_color"
-
-    await update.message.reply_text("Выберите цвет для новой категории:", reply_markup=get_color_keyboard())
-
+    user_state[user_id]["bot_message_id"] = update.message.message_id
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+
     data = query.data
 
     if data == "add_category":
-        user_states[user_id]["stage"] = "awaiting_new_category"
-        await query.message.reply_text("Введите название новой категории:")
-        return
-
-    if data.startswith("color:"):
-        color = data.split(":")[1]
-        new_cat = user_states[user_id].get("new_category_name")
-        if new_cat:
-            user_states[user_id].setdefault("custom_categories", [])
-            user_states[user_id]["custom_categories"].insert(0, {"name": new_cat, "color": color})
-
-        # Очистка и возврат к выбору категорий
+        user_state[user_id]["awaiting_new_category"] = True
         await query.message.delete()
-        url = user_states[user_id].get("url")
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text=f"Вы прислали ссылку:\n{url}\n\nВыберите категорию:",
-            reply_markup=get_category_keyboard(user_id)
-        )
-        return
+        await query.message.reply_text("Введите название новой категории:")
+    elif data.startswith("select_category"):
+        _, category, color = data.split("|")
+        url = user_state[user_id]["url"]
+        html_content, _ = await fetch_website_content(url)
+        title = BeautifulSoup(html_content, 'html.parser').title
+        title_text = title.string.strip() if title else "Без названия"
 
-    if data.startswith("cat:"):
-        category = data.split(":")[1]
-        all_categories = user_states[user_id].get("custom_categories", []) + default_categories
-        selected_cat = next((c for c in all_categories if c["name"] == category), None)
+        description = html_content[:100].strip().replace("\n", " ")
 
-        if selected_cat:
-            url = user_states[user_id]["url"]
-            site_title = urllib.parse.urlparse(url).netloc
-            site_desc = f"Описание сайта для {site_title}"
-            final_link = f"/?uploadnew={url}|{site_title}|{site_desc}|{category}|{selected_cat['color']}"
+        encoded_data = urllib.parse.quote(f"{url}|{title_text}|{description}|{category}|{color}")
+        link = f"https://sortik.app/?uploadnew={encoded_data}"
 
-            # Удалим предыдущее сообщение и сообщение пользователя
-            try:
-                await context.bot.delete_message(chat_id=query.message.chat_id, message_id=user_states[user_id]["message_id"])
-                await context.bot.delete_message(chat_id=query.message.chat_id, message_id=query.message.message_id)
-            except Exception as e:
-                print("Ошибка удаления сообщений:", e)
+        await query.message.delete()
+        await context.bot.delete_message(chat_id=query.message.chat_id, message_id=user_state[user_id].get("bot_message_id"))
+        await context.bot.send_message(chat_id=query.message.chat_id, text=f"Открыть: {link}")
 
-            await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text=f"[Перейти к загрузке]({final_link})",
-                parse_mode=ParseMode.MARKDOWN
-            )
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in user_state and user_state[user_id].get("awaiting_new_category"):
+        category = update.message.text.strip()
+        user_state[user_id]["new_category"] = category
+        user_state[user_id].pop("awaiting_new_category")
+
+        keyboard = [[InlineKeyboardButton(color, callback_data=f"select_category|{category}|{color}")]
+                    for color in CATEGORY_COLORS]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.delete()
+        await update.message.reply_text("Выберите цвет категории:", reply_markup=reply_markup)
 
 
 def main():
     if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN не установлен в переменной окружения.")
+        raise ValueError("BOT_TOKEN environment variable not set")
+
+    init_db()
 
     application = Application.builder().token(BOT_TOKEN).build()
-
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
-
-    # ВАЖНО: сначала проверяем стадии пользователя, потом общие текстовые
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("Бот запущен...")
     application.run_polling()
-
 
 if __name__ == "__main__":
     main()
