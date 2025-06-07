@@ -28,6 +28,15 @@ def init_db():
             PRIMARY KEY (user_id, url)
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS custom_categories (
+            user_id INTEGER,
+            category TEXT,
+            color TEXT,
+            timestamp TEXT,
+            PRIMARY KEY (user_id, category)
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -49,6 +58,18 @@ def load_cache(user_id: int) -> Dict[str, Dict[str, Any]]:
         print(f"Error loading cache: {e}")
         return {}
 
+def load_custom_categories(user_id: int) -> Dict[str, str]:
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ?', (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return {row[0]: row[1] for row in rows}
+    except Exception as e:
+        print(f"Error loading custom categories: {e}")
+        return {}
+
 async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[str, str]):
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -63,6 +84,20 @@ async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[
         conn.close()
     except Exception as e:
         print(f"Error saving cache: {e}")
+
+async def save_custom_category(user_id: int, category: str, color: str):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        timestamp = datetime.now().isoformat()
+        cursor.execute('''
+            INSERT OR REPLACE INTO custom_categories (user_id, category, color, timestamp)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, category, color, timestamp))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error saving custom category: {e}")
 
 async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
     try:
@@ -115,37 +150,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shared_url = urls[0]
     user_cache = load_cache(user_id)
 
-    if shared_url in user_cache:
-        timestamp = user_cache[shared_url]['timestamp']
-        await update.message.reply_text(f"Кеш найден (от {timestamp}).")
-    else:
+    if shared_url not in user_cache:
         html_content, resources = await fetch_website_content(shared_url)
         await save_cache(user_id, shared_url, html_content, resources)
-        await update.message.reply_text("Сайт успешно загружен и сохранен в кеш.")
 
-    categories = {
+    default_categories = {
         "News": "blue",
         "Tech": "green",
         "Fun": "yellow",
         "Sport": "red",
         "Music": "purple"
     }
-
+    custom_categories = load_custom_categories(user_id)
+    
     buttons = []
     row = []
-    for idx, (category, color) in enumerate(categories.items(), 1):
+    row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
+    buttons.append(row)
+
+    for category, color in custom_categories.items():
+        full_payload = f"{shared_url}|{category}|{color}"
+        encoded = urllib.parse.quote(full_payload, safe='')
+        button_url = f"https://sortik.app/?uploadnew={encoded}"
+        buttons.append([InlineKeyboardButton(category, web_app={"url": button_url})])
+
+    row = []
+    for idx, (category, color) in enumerate(default_categories.items(), 1):
         full_payload = f"{shared_url}|{category}|{color}"
         encoded = urllib.parse.quote(full_payload, safe='')
         button_url = f"https://sortik.app/?uploadnew={encoded}"
         row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-        if idx % 3 == 0 or idx == len(categories):
+        if idx % 3 == 0 or idx == len(default_categories):
             buttons.append(row)
             row = []
 
     reply_markup = InlineKeyboardMarkup(buttons)
-
-    await update.message.reply_text(
-        f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
+    context.user_data['last_url_message'] = await update.message.reply_text(
+        f"Ссылка: {shared_url}\ KrankВыберите категорию для сорта:",
         reply_markup=reply_markup
     )
 
@@ -167,6 +208,91 @@ async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(response)
 
+async def category_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if 'last_url_message' in context.user_data:
+        await context.user_data['last_url_message'].delete()
+    context.user_data['category_add_mode'] = True
+    await update.message.reply_text("Назовите новую категорию:")
+
+async def handle_category_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if context.user_data.get('category_add_mode', False):
+        new_category = update.message.text.strip()
+        context.user_data['new_category'] = new_category
+        colors = ['red', 'blue', 'green', 'yellow', 'purple', 'pink', 'indigo', 'gray']
+        buttons = []
+        row = []
+        for idx, color in enumerate(colors, 1):
+            row.append(InlineKeyboardButton(color, callback_data=f"color|{color}"))
+            if idx % 3 == 0 or idx == len(colors):
+                buttons.append(row)
+                row = []
+        reply_markup = InlineKeyboardMarkup(buttons)
+        context.user_data['category_color_message'] = await update.message.reply_text(
+            f"Выберите цвет для категории '{new_category}':",
+            reply_markup=reply_markup
+        )
+        context.user_data['category_add_mode'] = False
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split('|')
+    user_id = update.effective_user.id
+
+    if data[0] == "add_category":
+        shared_url = data[1]
+        if 'last_url_message' in context.user_data:
+            await context.user_data['last_url_message'].delete()
+        context.user_data['category_add_mode'] = True
+        context.user_data['current_url'] = shared_url
+        await query.message.reply_text("Назовите новую категорию:")
+    elif data[0] == "color":
+        color = data[1]
+        new_category = context.user_data.get('new_category')
+        shared_url = context.user_data.get('current_url')
+        if new_category and shared_url:
+            await save_custom_category(user_id, new_category, color)
+            if 'category_color_message' in context.user_data:
+                await context.user_data['category_color_message'].delete()
+            
+            default_categories = {
+                "News": "blue",
+                "Tech": "green",
+                "Fun": "yellow",
+                "Sport": "red",
+                "Music": "purple"
+            }
+            custom_categories = load_custom_categories(user_id)
+            
+            buttons = []
+            row = []
+            row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
+            buttons.append(row)
+
+            for category, color in custom_categories.items():
+                full_payload = f"{shared_url}|{category}|{color}"
+                encoded = urllib.parse.quote(full_payload, safe='')
+                button_url = f"https://sortik.app/?uploadnew={encoded}"
+                buttons.append([InlineKeyboardButton(category, web_app={"url": button_url})])
+
+            row = []
+            for idx, (category, color) in enumerate(default_categories.items(), 1):
+                full_payload = f"{shared_url}|{category}|{color}"
+                encoded = urllib.parse.quote(full_payload, safe='')
+                button_url = f"https://sortik.app/?uploadnew={encoded}"
+                row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
+                if idx % 3 == 0 or idx == len(default_categories):
+                    buttons.append(row)
+                    row = []
+
+            reply_markup = InlineKeyboardMarkup(buttons)
+            context.user_data['last_url_message'] = await query.message.reply_text(
+                f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
+                reply_markup=reply_markup
+            )
+
 def main():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN environment variable not set")
@@ -176,7 +302,10 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("view_cache", view_cache))
+    application.add_handler(CommandHandler("categoryadd", category_add))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category_input))
+    application.add_handler(CallbackQueryHandler(handle_callback))
 
     print("Бот запущен...")
     application.run_polling()
