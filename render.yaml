@@ -1,7 +1,6 @@
 services:
-  - type: web
-    name: telegram-bot
-    env: pythonAdd commentMore actions
+    name: telegram-botAdd commentMore actions
+    env: python
     plan: free
     buildCommand: ""
     startCommand: python bot.py
