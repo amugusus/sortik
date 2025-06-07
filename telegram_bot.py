@@ -135,12 +135,12 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
         return f"Error: {str(e)}", {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    await update.message.geply_text(
         "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
         "HTML и ресурсы сайта будут сохранены в кеш."
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     message_text = update.message.text
     urls = re.findall(URL_REGEX, message_text)
@@ -214,10 +214,12 @@ async def category_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if 'last_url_message' in context.user_data:
         await context.user_data['last_url_message'].delete()
+        del context.user_data['last_url_message']
     context.user_data['category_add_mode'] = True
+    context.user_data['category_add_trigger'] = 'command'
     await update.message.reply_text("Назовите новую категорию:")
 
-async def handle_category_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if context.user_data.get('category_add_mode', False):
         new_category = update.message.text.strip()
@@ -236,6 +238,8 @@ async def handle_category_input(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=reply_markup
         )
         context.user_data['category_add_mode'] = False
+    else:
+        await handle_url(update, context)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -247,7 +251,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         shared_url = data[1]
         if 'last_url_message' in context.user_data:
             await context.user_data['last_url_message'].delete()
+            del context.user_data['last_url_message']
         context.user_data['category_add_mode'] = True
+        context.user_data['category_add_trigger'] = 'button'
         context.user_data['current_url'] = shared_url
         await query.message.reply_text("Назовите новую категорию:")
     elif data[0] == "color":
@@ -258,6 +264,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await save_custom_category(user_id, new_category, color)
             if 'category_color_message' in context.user_data:
                 await context.user_data['category_color_message'].delete()
+                del context.user_data['category_color_message']
             
             default_categories = {
                 "News": "blue",
@@ -306,7 +313,6 @@ def main():
     application.add_handler(CommandHandler("view_cache", view_cache))
     application.add_handler(CommandHandler("categoryadd", category_add))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category_input))
     application.add_handler(CallbackQueryHandler(handle_callback))
 
     print("Бот запущен...")
