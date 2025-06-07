@@ -99,6 +99,43 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
     except Exception as e:
         return f"Error: {str(e)}", {}
 
+async def extract_metadata(url: str, html_content: str) -> tuple[str, str]:
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Default title and description from HTML
+    title = soup.title.string.strip() if soup.title and soup.title.string else "Без названия"
+    description_tag = soup.find('meta', attrs={'name': 'description'}) or soup.find('meta', attrs={'property': 'og:description'})
+    description = description_tag['content'].strip() if description_tag and description_tag.get('content') else "Без описания"
+    
+    # Social media specific handling
+    if 'youtube.com' in url or 'youtu.be' in url:
+        title_tag = soup.find('meta', attrs={'property': 'og:title'})
+        title = title_tag['content'].strip() if title_tag and title_tag.get('content') else title
+        description_tag = soup.find('meta', attrs={'property': 'og:description'})
+        description = description_tag['content'].strip() if description_tag and description_tag.get('content') else description
+    elif 'instagram.com' in url:
+        title_tag = soup.find('meta', attrs={'property': 'og:title'})
+        title = title_tag['content'].strip() if title_tag and title_tag.get('content') else title
+        description_tag = soup.find('meta', attrs={'property': 'og:description'})
+        description = description_tag['content'].strip() if description_tag and description_tag.get('content') else description
+    elif 'facebook.com' in url:
+        title_tag = soup.find('meta', attrs={'property': 'og:title'})
+        title = title_tag['content'].strip() if title_tag and title_tag.get('content') else title
+        description_tag = soup.find('meta', attrs={'property': 'og:description'})
+        description = description_tag['content'].strip() if description_tag and description_tag.get('content') else description
+    elif 'tiktok.com' in url:
+        title_tag = soup.find('meta', attrs={'property': 'og:title'})
+        title = title_tag['content'].strip() if title_tag and title_tag.get('content') else title
+        description_tag = soup.find('meta', attrs={'property': 'og:description'})
+        description = description_tag['content'].strip() if description_tag and description_tag.get('content') else description
+    elif 'twitter.com' in url or 'x.com' in url:
+        title_tag = soup.find('meta', attrs={'name': 'twitter:title'}) or soup.find('meta', attrs={'property': 'og:title'})
+        title = title_tag['content'].strip() if title_tag and title_tag.get('content') else title
+        description_tag = soup.find('meta', attrs={'name': 'twitter:description'}) or soup.find('meta', attrs={'property': 'og:description'})
+        description = description_tag['content'].strip() if description_tag and description_tag.get('content') else description
+    
+    return title, description
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
@@ -123,12 +160,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         html_content, resources = await fetch_website_content(shared_url)
         await save_cache(user_id, shared_url, html_content, resources)
-        await update.message.reply_text("Сайт успешно загружен и сохранен в кеш.")
 
-    soup = BeautifulSoup(html_content, 'html.parser')
-    title = soup.title.string.strip() if soup.title and soup.title.string else "Без названия"
-    description_tag = soup.find('meta', attrs={'name': 'description'}) or soup.find('meta', attrs={'property': 'og:description'})
-    description = description_tag['content'].strip() if description_tag and description_tag.get('content') else "Без описания"
+    html_content = user_cache.get(shared_url, {}).get('html_content', '')
+    title, description = await extract_metadata(shared_url, html_content)
 
     categories = {
         "News": "blue",
