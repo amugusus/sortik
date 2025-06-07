@@ -102,7 +102,7 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
-        "HTML и ресурсы сайта будут сохранены в кэш."
+        "HTML и ресурсы сайта будут сохранены в кеш."
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,13 +118,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_cache = load_cache(user_id)
 
     if shared_url in user_cache:
-        html_content = user_cache[shared_url]['html_content']
         timestamp = user_cache[shared_url]['timestamp']
-        await update.message.reply_text(f"Кеш найден (от {timestamp}): {html_content[:200]}...")
+        await update.message.reply_text(f"Кеш найден (от {timestamp}).")
     else:
         html_content, resources = await fetch_website_content(shared_url)
         await save_cache(user_id, shared_url, html_content, resources)
-        await update.message.reply_text(f"Сайт загружен и сохранен в кеш: {html_content[:200]}...")
+        await update.message.reply_text("Сайт успешно загружен и сохранен в кеш.")
 
     soup = BeautifulSoup(html_content, 'html.parser')
     title = soup.title.string.strip() if soup.title and soup.title.string else "Без названия"
@@ -153,7 +152,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(buttons)
 
     await update.message.reply_text(
-        "Выберите категорию для ссылки:",
+        f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
         reply_markup=reply_markup
     )
 
