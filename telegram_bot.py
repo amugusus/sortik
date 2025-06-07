@@ -10,10 +10,12 @@ import sqlite3
 from pathlib import Path
 from bs4 import BeautifulSoup
 import json
+import asyncio
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 URL_REGEX = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
 DB_FILE = "web_cache.db"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., https://your-render-app.onrender.com
 
 def init_db():
     db_path = Path(DB_FILE)
@@ -68,11 +70,15 @@ async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[
 async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive'
         }
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=10) as response:
                 if response.status != 200:
+                    print(f"Fetch failed for {url}: Status {response.status}")
                     return f"Error: Failed to fetch content (status {response.status})", {}
                 html_content = await response.text()
 
@@ -100,66 +106,73 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
                             resources[resource_url] = f"Error: {str(e)}"
             return html_content, resources
     except Exception as e:
+        print(f"Error fetching {url}: {str(e)}")
         return f"Error: {str(e)}", {}
 
 async def extract_metadata(url: str, html_content: str) -> tuple[str, str]:
     try:
-        soup = BeautifulSoup(html_content, 'html.parser')
+        if "Error" in html_content:
+            return "Untitled", "No description available"
+        
+        soup = BeautifulSoup(html_content, 'lxml')  # Use lxml parser for better reliability
         
         # Initialize defaults
-        title = "Untitled"
-        description = "No description available"
+        title = None
+        description = None
         
-        # Try multiple title sources
+        # List of title sources, in order of priority
         title_sources = [
-            lambda: soup.title.string.strip() if soup.title and soup.title.string else None,
             lambda: soup.find('meta', attrs={'property': 'og:title'})['content'].strip() if soup.find('meta', attrs={'property': 'og:title'}) and soup.find('meta', attrs={'property': 'og:title'}).get('content') else None,
             lambda: soup.find('meta', attrs={'name': 'twitter:title'})['content'].strip() if soup.find('meta', attrs={'name': 'twitter:title'}) and soup.find('meta', attrs={'name': 'twitter:title'}).get('content') else None,
-            lambda: soup.find('h1').text.strip() if soup.find('h1') else None
+            lambda: soup.title.string.strip() if soup.title and soup.title.string else None,
+            lambda: soup.find('h1').text.strip() if soup.find('h1') else None,
+            lambda: soup.find('meta', attrs={'name': 'title'})['content'].strip() if soup.find('meta', attrs={'name': 'title'}) and soup.find('meta', attrs={'name': 'title'}).get('content') else None
         ]
         
-        # Try multiple description sources
+        # List of description sources, in order of priority
         description_sources = [
-            lambda: soup.find('meta', attrs={'name': 'description'})['content'].strip() if soup.find('meta', attrs={'name': 'description'}) and soup.find('meta', attrs={'name': 'description'}).get('content') else None,
             lambda: soup.find('meta', attrs={'property': 'og:description'})['content'].strip() if soup.find('meta', attrs={'property': 'og:description'}) and soup.find('meta', attrs={'property': 'og:description'}).get('content') else None,
             lambda: soup.find('meta', attrs={'name': 'twitter:description'})['content'].strip() if soup.find('meta', attrs={'name': 'twitter:description'}) and soup.find('meta', attrs={'name': 'twitter:description'}).get('content') else None,
-            lambda: ' '.join([p.text.strip() for p in soup.find_all('p')[:2]]) if soup.find_all('p') else None
+            lambda: soup.find('meta', attrs={'name': 'description'})['content'].strip() if soup.find('meta', attrs={'name': 'description'}) and soup.find('meta', attrs={'name': 'description'}).get('content') else None,
+            lambda: ' '.join([p.text.strip() for p in soup.find_all('p')[:2] if p.text.strip()]) or None
         ]
         
-        # Extract title from available sources
+        # Extract title
         for source in title_sources:
             try:
                 result = source()
                 if result and result.strip():
                     title = result
                     break
-            except Exception:
+            except Exception as e:
+                print(f"Title extraction attempt failed: {e}")
                 continue
         
-        # Extract description from available sources
+        # Extract description
         for source in description_sources:
             try:
                 result = source()
                 if result and result.strip():
                     description = result
                     break
-            except Exception:
+            except Exception as e:
+                print(f"Description extraction attempt failed: {e}")
                 continue
         
-        # Clean up title and description
-        title = re.sub(r'\s+', ' ', title).strip()
-        description = re.sub(r'\s+', ' ', description).strip()
+        # Fallbacks if still not found
+        title = title or "Untitled"
+        description = description or "No description available"
         
-        # Handle specific platforms with fallback
-        if any(domain in url for domain in ['youtube.com', 'youtu.be', 'instagram.com', 'facebook.com', 'tiktok.com', 'twitter.com', 'x.com']):
-            if title == "Untitled":
-                title = soup.find('meta', attrs={'property': 'og:title'})['content'].strip() if soup.find('meta', attrs={'property': 'og:title'}) and soup.find('meta', attrs={'property': 'og:title'}).get('content') else title
-            if description == "No description available":
-                description = soup.find('meta', attrs={'property': 'og:description'})['content'].strip() if soup.find('meta', attrs={'property': 'og:description'}) and soup.find('meta', attrs={'property': 'og:description'}).get('content') else description
+        # Clean up title and description
+        title = re.sub(r'\s+', ' ', title).strip()[:200]  # Limit length to avoid issues
+        description = re.sub(r'\s+', ' ', description).strip()[:500]  # Limit length to avoid issues
+        
+        # Log for debugging
+        print(f"Extracted metadata for {url}: Title='{title}', Description='{description}'")
         
         return title, description
     except Exception as e:
-        print(f"Error extracting metadata: {e}")
+        print(f"Error extracting metadata for {url}: {e}")
         return "Untitled", "No description available"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -237,9 +250,14 @@ async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(response)
 
+async def webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return update
+
 def main():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN environment variable not set")
+    if not WEBHOOK_URL:
+        raise ValueError("WEBHOOK_URL environment variable not set")
 
     init_db()
 
@@ -247,9 +265,15 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("view_cache", view_cache))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.UpdateType.WEBHOOK, webhook))
 
-    print("Бот запущен...")
-    application.run_polling()
+    print("Бот запускается...")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=8443,
+        url_path="",
+        webhook_url=WEBHOOK_URL
+    )
 
 if __name__ == "__main__":
     main()
