@@ -67,7 +67,10 @@ async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[
 
 async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
     try:
-        async with aiohttp.ClientSession() as session:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=10) as response:
                 if response.status != 200:
                     return f"Error: Failed to fetch content (status {response.status})", {}
@@ -100,45 +103,68 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
         return f"Error: {str(e)}", {}
 
 async def extract_metadata(url: str, html_content: str) -> tuple[str, str]:
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Default title and description from HTML
-    title = soup.title.string.strip() if soup.title and soup.title.string else "Без названия"
-    description_tag = soup.find('meta', attrs={'name': 'description'}) or soup.find('meta', attrs={'property': 'og:description'})
-    description = description_tag['content'].strip() if description_tag and description_tag.get('content') else "Без описания"
-    
-    # Social media specific handling
-    if 'youtube.com' in url or 'youtu.be' in url:
-        title_tag = soup.find('meta', attrs={'property': 'og:title'})
-        title = title_tag['content'].strip() if title_tag and title_tag.get('content') else title
-        description_tag = soup.find('meta', attrs={'property': 'og:description'})
-        description = description_tag['content'].strip() if description_tag and description_tag.get('content') else description
-    elif 'instagram.com' in url:
-        title_tag = soup.find('meta', attrs={'property': 'og:title'})
-        title = title_tag['content'].strip() if title_tag and title_tag.get('content') else title
-        description_tag = soup.find('meta', attrs={'property': 'og:description'})
-        description = description_tag['content'].strip() if description_tag and description_tag.get('content') else description
-    elif 'facebook.com' in url:
-        title_tag = soup.find('meta', attrs={'property': 'og:title'})
-        title = title_tag['content'].strip() if title_tag and title_tag.get('content') else title
-        description_tag = soup.find('meta', attrs={'property': 'og:description'})
-        description = description_tag['content'].strip() if description_tag and description_tag.get('content') else description
-    elif 'tiktok.com' in url:
-        title_tag = soup.find('meta', attrs={'property': 'og:title'})
-        title = title_tag['content'].strip() if title_tag and title_tag.get('content') else title
-        description_tag = soup.find('meta', attrs={'property': 'og:description'})
-        description = description_tag['content'].strip() if description_tag and description_tag.get('content') else description
-    elif 'twitter.com' in url or 'x.com' in url:
-        title_tag = soup.find('meta', attrs={'name': 'twitter:title'}) or soup.find('meta', attrs={'property': 'og:title'})
-        title = title_tag['content'].strip() if title_tag and title_tag.get('content') else title
-        description_tag = soup.find('meta', attrs={'name': 'twitter:description'}) or soup.find('meta', attrs={'property': 'og:description'})
-        description = description_tag['content'].strip() if description_tag and description_tag.get('content') else description
-    
-    return title, description
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Initialize defaults
+        title = "Untitled"
+        description = "No description available"
+        
+        # Try multiple title sources
+        title_sources = [
+            lambda: soup.title.string.strip() if soup.title and soup.title.string else None,
+            lambda: soup.find('meta', attrs={'property': 'og:title'})['content'].strip() if soup.find('meta', attrs={'property': 'og:title'}) and soup.find('meta', attrs={'property': 'og:title'}).get('content') else None,
+            lambda: soup.find('meta', attrs={'name': 'twitter:title'})['content'].strip() if soup.find('meta', attrs={'name': 'twitter:title'}) and soup.find('meta', attrs={'name': 'twitter:title'}).get('content') else None,
+            lambda: soup.find('h1').text.strip() if soup.find('h1') else None
+        ]
+        
+        # Try multiple description sources
+        description_sources = [
+            lambda: soup.find('meta', attrs={'name': 'description'})['content'].strip() if soup.find('meta', attrs={'name': 'description'}) and soup.find('meta', attrs={'name': 'description'}).get('content') else None,
+            lambda: soup.find('meta', attrs={'property': 'og:description'})['content'].strip() if soup.find('meta', attrs={'property': 'og:description'}) and soup.find('meta', attrs={'property': 'og:description'}).get('content') else None,
+            lambda: soup.find('meta', attrs={'name': 'twitter:description'})['content'].strip() if soup.find('meta', attrs={'name': 'twitter:description'}) and soup.find('meta', attrs={'name': 'twitter:description'}).get('content') else None,
+            lambda: ' '.join([p.text.strip() for p in soup.find_all('p')[:2]]) if soup.find_all('p') else None
+        ]
+        
+        # Extract title from available sources
+        for source in title_sources:
+            try:
+                result = source()
+                if result and result.strip():
+                    title = result
+                    break
+            except Exception:
+                continue
+        
+        # Extract description from available sources
+        for source in description_sources:
+            try:
+                result = source()
+                if result and result.strip():
+                    description = result
+                    break
+            except Exception:
+                continue
+        
+        # Clean up title and description
+        title = re.sub(r'\s+', ' ', title).strip()
+        description = re.sub(r'\s+', ' ', description).strip()
+        
+        # Handle specific platforms with fallback
+        if any(domain in url for domain in ['youtube.com', 'youtu.be', 'instagram.com', 'facebook.com', 'tiktok.com', 'twitter.com', 'x.com']):
+            if title == "Untitled":
+                title = soup.find('meta', attrs={'property': 'og:title'})['content'].strip() if soup.find('meta', attrs={'property': 'og:title'}) and soup.find('meta', attrs={'property': 'og:title'}).get('content') else title
+            if description == "No description available":
+                description = soup.find('meta', attrs={'property': 'og:description'})['content'].strip() if soup.find('meta', attrs={'property': 'og:description'}) and soup.find('meta', attrs={'property': 'og:description'}).get('content') else description
+        
+        return title, description
+    except Exception as e:
+        print(f"Error extracting metadata: {e}")
+        return "Untitled", "No description available"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
+        "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открывать ссылку в мини-приложении. "
         "HTML и ресурсы сайта будут сохранены в кеш."
     )
 
@@ -154,14 +180,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shared_url = urls[0]
     user_cache = load_cache(user_id)
 
-    if shared_url in user_cache:
-        timestamp = user_cache[shared_url]['timestamp']
-        await update.message.reply_text(f"Кеш найден (от {timestamp}).")
+    if shared_url not in user_cache:
+        html_content, resources = await fetch_website_content(shared_url)
+        await save_cache(user_id, shared_url, html_content, resources)
     else:
+        await update.message.reply_text(f"Кеш найден (от {user_cache[shared_url]['timestamp']}).")
+
+    html_content = user_cache.get(shared_url, {}).get('html_content', '')
+    if not html_content or "Error" in html_content:
         html_content, resources = await fetch_website_content(shared_url)
         await save_cache(user_id, shared_url, html_content, resources)
 
-    html_content = user_cache.get(shared_url, {}).get('html_content', '')
     title, description = await extract_metadata(shared_url, html_content)
 
     categories = {
