@@ -37,19 +37,30 @@ USER_CATEGORIES = {}
 COLOR_OPTIONS = ['red', 'blue', 'green', 'yellow', 'purple', 'pink', 'indigo', 'gray']
 
 def init_db():
-    """Initialize SQLite database for cache ROPage storage."""
+    """Initialize SQLite database for cache and URL storage."""
     try:
         db_path = Path(DB_FILE)
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
+        # Cache table for website content
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS cache (
                 user_id INTEGER,
                 url TEXT,
                 html_content TEXT,
-                resources TEXT,  -- JSON string of resource URLs and their content
+                resources TEXT,
                 timestamp TEXT,
                 PRIMARY KEY (user_id, url)
+            )
+        ''')
+        # Table for temporary URL storage
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_urls (
+                user_id INTEGER,
+                message_id INTEGER,
+                url TEXT,
+                timestamp TEXT,
+                PRIMARY KEY (user_id, message_id)
             )
         ''')
         conn.commit()
@@ -92,17 +103,43 @@ async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[
     except Exception as e:
         logger.error(f"Error saving cache: {e}")
 
+async def save_user_url(user_id: int, message_id: int, url: str):
+    """Save the URL associated with a message ID for the user."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        timestamp = datetime.now().isoformat()
+        cursor.execute('''
+            INSERT OR REPLACE INTO user_urls (user_id, message_id, url, timestamp)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, message_id, url, timestamp))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error saving user URL: {e}")
+
+async def load_user_url(user_id: int, message_id: int) -> str:
+    """Load the URL associated with a message ID for the user."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT url FROM user_urls WHERE user_id = ? AND message_id = ?', (user_id, message_id))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else ""
+    except Exception as e:
+        logger.error(f"Error loading user URL: {e}")
+        return ""
+
 async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
     """Fetch website HTML and attempt to cache linked resources."""
     try:
         async with aiohttp.ClientSession() as session:
-            # Fetch HTML content
             async with session.get(url, timeout=10) as response:
                 if response.status != 200:
                     return f"Error: Failed to fetch content (status {response.status})", {}
                 html_content = await response.text()
             
-            # Parse HTML to find resource URLs (CSS, JS, images)
             soup = BeautifulSoup(html_content, 'html.parser')
             resources = {}
             resource_tags = [
@@ -115,7 +152,6 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
                 for element in soup.find_all(tag, attrs={attr: re.compile(pattern)}):
                     resource_url = element.get(attr)
                     if resource_url:
-                        # Convert relative URLs to absolute
                         if not resource_url.startswith(('http://', 'https://')):
                             resource_url = urllib.parse.urljoin(url, resource_url)
                         try:
@@ -142,11 +178,9 @@ async def extract_metadata(url: str) -> tuple[str, str]:
                 html_content = await response.text()
                 soup = BeautifulSoup(html_content, 'html.parser')
                 
-                # Extract title
                 title = soup.title.string if soup.title else "Untitled"
                 title = title.strip() if title else "Untitled"
                 
-                # Extract description (meta tag or first paragraph)
                 description = ""
                 meta_desc = soup.find('meta', attrs={'name': 'description'})
                 if meta_desc and meta_desc.get('content'):
@@ -177,6 +211,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         message_text = update.message.text
+        message_id = update.message.message_id
         urls = re.findall(URL_REGEX, message_text)
 
         if not urls:
@@ -184,8 +219,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         shared_url = urls[0]
-        # Store URL in context for later use to avoid long callback_data
-        context.user_data['current_url'] = shared_url
+        # Save URL to database with message ID
+        await save_user_url(user_id, message_id, shared_url)
 
         # Load user-specific cache from database
         user_cache = load_cache(user_id)
@@ -196,7 +231,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             timestamp = user_cache[shared_url]['timestamp']
             await update.message.reply_text(f"Кеш найден (от {timestamp}): {html_content[:200]}...")
         else:
-            # Fetch and cache website content and resources
             html_content, resources = await fetch_website_content(shared_url)
             await save_cache(user_id, shared_url, html_content, resources)
             await update.message.reply_text(f"Сайт загружен и сохранен в кеш: {html_content[:200]}...")
@@ -206,21 +240,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Create inline buttons for categories
         keyboard = []
-        # Add "+" button for new category
-        keyboard.append([InlineKeyboardButton("+", callback_data="new_category")])
+        keyboard.append([InlineKeyboardButton("+", callback_data=f"new_category|{message_id}")])
         
-        # Add user-defined categories first
         user_cats = USER_CATEGORIES.get(user_id, {})
         for cat, color in user_cats.items():
-            keyboard.append([InlineKeyboardButton(cat, callback_data=f"category|{cat}|{color}")])
+            keyboard.append([InlineKeyboardButton(cat, callback_data=f"category|{cat}|{color}|{message_id}")])
         
-        # Add predefined categories
         for cat, color in CATEGORIES.items():
-            keyboard.append([InlineKeyboardButton(cat, callback_data=f"category|{cat}|{color}")])
+            keyboard.append([InlineKeyboardButton(cat, callback_data=f"category|{cat}|{color}|{message_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Send a message with the button that appears above the input field
         context.user_data['last_message'] = await update.message.reply_text(
             "Нажмите кнопку выше, чтобы открыть ссылку в мини-приложении:",
             reply_markup=InlineKeyboardMarkup([
@@ -243,37 +273,44 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         data = query.data.split("|")
         action = data[0]
+        message_id = int(data[-1])  # Last element is message_id
+
+        # Load the URL from database using message_id
+        shared_url = await load_user_url(user_id, message_id)
+        if not shared_url:
+            logger.warning(f"No URL found for user {user_id} and message {message_id}")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Ошибка: потеряна ссылка. Отправьте ссылку заново."
+            )
+            return
 
         if action == "new_category":
-            # Delete the category selection message
-            await query.message.delete()
-            # Ask for new category name
-            context.user_data['category_message'] = await query.message.reply_text(
-                "Введите название новой категории:"
+            try:
+                await query.message.delete()
+            except Exception as e:
+                logger.warning(f"Failed to delete category message: {e}")
+            context.user_data['pending_message_id'] = message_id
+            context.user_data['category_message'] = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Введите название новой категории:"
             )
         elif action == "color":
             category = data[1]
             color = data[2]
-            shared_url = context.user_data.get('current_url', '')
-            if not shared_url:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text="Ошибка: потеряна ссылка. Отправьте ссылку заново."
-                )
-                return
-            # Delete the color selection message
-            await query.message.delete()
-            # Save the new category with the selected color
+            try:
+                await query.message.delete()
+            except Exception as e:
+                logger.warning(f"Failed to delete color message: {e}")
             if user_id not in USER_CATEGORIES:
                 USER_CATEGORIES[user_id] = {}
             USER_CATEGORIES[user_id][category] = color
-            # Re-display the original message with updated categories
             keyboard = []
-            keyboard.append([InlineKeyboardButton("+", callback_data="new_category")])
+            keyboard.append([InlineKeyboardButton("+", callback_data=f"new_category|{message_id}")])
             for cat, col in USER_CATEGORIES.get(user_id, {}).items():
-                keyboard.append([InlineKeyboardButton(cat, callback_data=f"category|{cat}|{col}")])
+                keyboard.append([InlineKeyboardButton(cat, callback_data=f"category|{cat}|{col}|{message_id}")])
             for cat, col in CATEGORIES.items():
-                keyboard.append([InlineKeyboardButton(cat, callback_data=f"category|{cat}|{col}")])
+                keyboard.append([InlineKeyboardButton(cat, callback_data=f"category|{cat}|{col}|{message_id}")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             context.user_data['category_message'] = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
@@ -283,24 +320,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "category":
             category = data[1]
             color = data[2]
-            shared_url = context.user_data.get('current_url', '')
-            if not shared_url:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text="Ошибка: потеряна ссылка. Отправьте ссылку заново."
-                )
-                return
-            # Extract metadata
             title, description = await extract_metadata(shared_url)
-            # Construct the mini-app URL
             encoded_url = urllib.parse.quote(shared_url, safe='')
             upload_url = f"/?uploadnew={encoded_url}|{urllib.parse.quote(title)}|{urllib.parse.quote(description)}|{urllib.parse.quote(category)}|{color}"
-            # Delete both the bot's messages and the user's message
-            await query.message.delete()  # Category selection message
-            if 'last_message' in context.user_data:
-                await context.user_data['last_message'].delete()
-            await update.effective_message.delete()  # User's original message
-            # Send the final mini-app URL
+            try:
+                await query.message.delete()  # Category selection message
+            except Exception as e:
+                logger.warning(f"Failed to delete category message: {e}")
+            try:
+                if 'last_message' in context.user_data:
+                    await context.user_data['last_message'].delete()
+            except Exception as e:
+                logger.warning(f"Failed to delete last message: {e}")
+            try:
+                await update.effective_message.delete()  # User's original message
+            except Exception as e:
+                logger.warning(f"Failed to delete user message: {e}")
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=f"Ссылка добавлена в категорию '{category}' (цвет: {color}):\n{upload_url}"
@@ -317,23 +352,29 @@ async def handle_new_category(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         user_id = update.effective_user.id
         category_name = update.message.text.strip()
-        shared_url = context.user_data.get('current_url', '')
+        message_id = context.user_data.get('pending_message_id', None)
         
-        if not category_name or not shared_url:
+        if not category_name or not message_id:
             await update.message.reply_text("Ошибка: некорректное название категории или потеряна ссылка.")
             return
         
-        # Delete the "Enter category name" message
-        if 'category_message' in context.user_data:
-            await context.user_data['category_message'].delete()
+        shared_url = await load_user_url(user_id, message_id)
+        if not shared_url:
+            logger.warning(f"No URL found for user {user_id} and message {message_id}")
+            await update.message.reply_text("Ошибка: потеряна ссылка. Отправьте ссылку заново.")
+            return
         
-        # Create color selection buttons
+        try:
+            if 'category_message' in context.user_data:
+                await context.user_data['category_message'].delete()
+        except Exception as e:
+            logger.warning(f"Failed to delete category prompt message: {e}")
+        
         keyboard = []
         for color in COLOR_OPTIONS:
-            keyboard.append([InlineKeyboardButton(color.capitalize(), callback_data=f"color|{category_name}|{color}")])
+            keyboard.append([InlineKeyboardButton(color.capitalize(), callback_data=f"color|{category_name}|{color}|{message_id}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Prompt for color selection
         context.user_data['category_message'] = await update.message.reply_text(
             "Выберите цвет для категории:",
             reply_markup=reply_markup
@@ -371,7 +412,6 @@ def main():
         if not BOT_TOKEN:
             raise ValueError("BOT_TOKEN environment variable not set")
         
-        # Initialize database at startup
         init_db()
         
         application = Application.builder().token(BOT_TOKEN).build()
