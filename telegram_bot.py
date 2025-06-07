@@ -8,8 +8,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import aiohttp
 from datetime import datetime
+import asyncio
 
-# Получение токена из переменной окружения (настроено на Render)
+# Получение токена из переменной окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MINI_APP_URL = "https://sortik.app/?add=true"
 
@@ -173,7 +174,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     title = re.search(r'<title>(.*?)</title>', content, re.IGNORECASE)
                     title = title.group(1) if title else shared_url
                     desc = re.search(r'<meta name="description" content="(.*?)"', content, re.IGNORECASE)
-                    description = desc.group(1) if desc else ""
+                    description = desc.group(1) if desc else "Описание отсутствует"
                 else:
                     title = shared_url
                     description = f"Ошибка: Не удалось загрузить содержимое (статус {response.status})"
@@ -187,7 +188,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("Открыть мини-приложение", web_app={"url": mini_app_link})]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Удаление сообщения пользователя и ббота
+        # Удаление сообщения пользователя и бота
         await query.message.delete()
         await context.bot.delete_message(chat_id=user_id, message_id=query.message.reply_to_message.message_id)
         
@@ -231,14 +232,13 @@ async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(response)
 
-def main():
+async def main():
     """Основная функция для запуска бота."""
     if not BOT_TOKEN:
         raise ValueError("Переменная окружения BOT_TOKEN не установлена")
     
-    # Загрузка кэша при запуске
-    import asyncio
-    asyncio.run(load_cache())
+    # Загрузка кэша
+    await load_cache()
     
     # Инициализация приложения
     application = Application.builder().token(BOT_TOKEN).build()
@@ -248,7 +248,15 @@ def main():
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     print("Бот запущен...")
-    application.run_polling()
     
+    # Запуск polling с использованием событийного цикла
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+
 if __name__ == '__main__':
-    main()
+    # Создаем событийный цикл и запускаем асинхронную функцию main
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()
+
