@@ -3,11 +3,12 @@ import re
 import urllib.parse
 from typing import Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import aiohttp
 from datetime import datetime
 import sqlite3
 from pathlib import Path
+from bs4 import BeautifulSoup
 import json
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -107,6 +108,7 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
                     return f"Error: Failed to fetch content (status {response.status})", {}
                 html_content = await response.text()
 
+            soup = BeautifulSoup(html_content, 'html.parser')
             resources = {}
             resource_tags = [
                 ('link', 'href', r'\.css$'),
@@ -186,7 +188,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(buttons)
     context.user_data['last_url_message'] = await update.message.reply_text(
-        f"Ссылка: {shared_url}\ KrankВыберите категорию для сорта:",
+        f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
         reply_markup=reply_markup
     )
 
