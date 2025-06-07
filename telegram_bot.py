@@ -10,10 +10,13 @@ import sqlite3
 from pathlib import Path
 from bs4 import BeautifulSoup
 import json
+from aiohttp import web
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 URL_REGEX = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
 DB_FILE = "web_cache.db"
+PORT = int(os.getenv("PORT", 8443))  # Render предоставляет PORT, по умолчанию 8443
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Укажите ваш URL, например, https://your-app-name.onrender.com
 
 def init_db():
     db_path = Path(DB_FILE)
@@ -135,7 +138,7 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
         return f"Error: {str(e)}", {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.geply_text(
+    await update.message.reply_text(
         "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
         "HTML и ресурсы сайта будут сохранены в кеш."
     )
@@ -302,21 +305,39 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
 
+async def webhook(request):
+    app = request.app['bot']
+    update = Update.de_json(await request.json(), app.bot)
+    await app.process_update(update)
+    return web.Response(text="OK")
+
 def main():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN environment variable not set")
+    if not WEBHOOK_URL:
+        raise ValueError("WEBHOOK_URL environment variable not set")
 
     init_db()
 
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("view_cache", view_cache))
-    application.add_handler(CommandHandler("categoryadd", category_add))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(handle_callback))
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("view_cache", view_cache))
+    app.add_handler(CommandHandler("categoryadd", category_add))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
 
-    print("Бот запущен...")
-    application.run_polling()
+    web_app = web.Application()
+    web_app['bot'] = app
+    web_app.add_routes([web.post('/', webhook)])
+
+    print("Бот запускается с вебхуками...")
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="",
+        webhook_url=f"{WEBHOOK_URL}"
+    )
+    web.run_app(web_app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
