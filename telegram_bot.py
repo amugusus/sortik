@@ -1,28 +1,33 @@
 import os
-import re
+import reMore actions
 import urllib.parse
-from typing import List, Dict, Any
+from typing import Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+import aiohttp
+from datetime import datetime
 import sqlite3
 from pathlib import Path
-from datetime import datetime
+from bs4 import BeautifulSoup
 import json
+from aiohttp import web
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 URL_REGEX = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
 DB_FILE = "web_cache.db"
+PORT = int(os.getenv("PORT", 8443))  # Render предоставляет PORT, по умолчанию 8443
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Укажите ваш URL, например, https://your-app-name.onrender.com
 
 def init_db():
     db_path = Path(DB_FILE)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS links (
+        CREATE TABLE IF NOT EXISTS cache (
             user_id INTEGER,
             url TEXT,
-            category TEXT,
-            color TEXT,
+            html_content TEXT,
+            resources TEXT,
             timestamp TEXT,
             PRIMARY KEY (user_id, url)
         )
@@ -39,20 +44,23 @@ def init_db():
     conn.commit()
     conn.close()
 
-def load_links(user_id: int) -> List[Dict[str, Any]]:
+def load_cache(user_id: int) -> Dict[str, Dict[str, Any]]:
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute('SELECT url, category, color, timestamp FROM links WHERE user_id = ? ORDER BY timestamp', (user_id,))
+        cursor.execute('SELECT url, html_content, resources, timestamp FROM cache WHERE user_id = ?', (user_id,))
         rows = cursor.fetchall()
         conn.close()
-        return [
-            {'url': row[0], 'category': row[1], 'color': row[2], 'timestamp': row[3]}
-            for row in rows
-        ]
+        return {
+            row[0]: {
+                'html_content': row[1],
+                'resources': json.loads(row[2]) if row[2] else {},
+                'timestamp': datetime.fromisoformat(row[3])
+            } for row in rows
+        }
     except Exception as e:
-        print(f"Error loading links: {e}")
-        return []
+        print(f"Error loading cache: {e}")
+        return {}
 
 def load_custom_categories(user_id: int) -> Dict[str, str]:
     try:
@@ -66,19 +74,20 @@ def load_custom_categories(user_id: int) -> Dict[str, str]:
         print(f"Error loading custom categories: {e}")
         return {}
 
-async def save_link(user_id: int, url: str, category: str = None, color: str = None):
+async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[str, str]):
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         timestamp = datetime.now().isoformat()
+        resources_json = json.dumps(resources)
         cursor.execute('''
-            INSERT OR REPLACE INTO links (user_id, url, category, color, timestamp)
+            INSERT OR REPLACE INTO cache (user_id, url, html_content, resources, timestamp)
             VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, url, category, color, timestamp))
+        ''', (user_id, url, html_content, resources_json, timestamp))
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Error saving link: {e}")
+        print(f"Error saving cache: {e}")
 
 async def save_custom_category(user_id: int, category: str, color: str):
     try:
@@ -94,10 +103,44 @@ async def save_custom_category(user_id: int, category: str, color: str):
     except Exception as e:
         print(f"Error saving custom category: {e}")
 
+async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                if response.status != 200:
+                    return f"Error: Failed to fetch content (status {response.status})", {}
+                html_content = await response.text()
+
+            soup = BeautifulSoup(html_content, 'html.parser')
+            resources = {}
+            resource_tags = [
+                ('link', 'href', r'\.css$'),
+                ('script', 'src', r'\.js$'),
+                ('img', 'src', r'\.(png|jpg|jpeg|gif)$')
+            ]
+
+            for tag, attr, pattern in resource_tags:
+                for element in soup.find_all(tag, attrs={attr: re.compile(pattern)}):
+                    resource_url = element.get(attr)
+                    if resource_url:
+                        if not resource_url.startswith(('http://', 'https://')):
+                            resource_url = urllib.parse.urljoin(url, resource_url)
+                        try:
+                            async with session.get(resource_url, timeout=5) as res:
+                                if res.status == 200:
+                                    resources[resource_url] = await res.text()
+                                else:
+                                    resources[resource_url] = f"Error: Status {res.status}"
+                        except Exception as e:
+                            resources[resource_url] = f"Error: {str(e)}"
+            return html_content, resources
+    except Exception as e:
+        return f"Error: {str(e)}", {}
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
-        "Все ссылки сохраняются в кеш."
+        "HTML и ресурсы сайта будут сохранены в кеш."
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,7 +153,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     shared_url = urls[0]
-    await save_link(user_id, shared_url)  # Сохраняем ссылку без категории и цвета
+    user_cache = load_cache(user_id)
+
+    if shared_url not in user_cache:
+        html_content, resources = await fetch_website_content(shared_url)
+        await save_cache(user_id, shared_url, html_content, resources)
 
     default_categories = {
         "News": "blue",
@@ -120,18 +167,24 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Music": "purple"
     }
     custom_categories = load_custom_categories(user_id)
-    
+
     buttons = []
     row = []
     row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
     buttons.append(row)
 
     for category, color in custom_categories.items():
-        buttons.append([InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}")])
+        full_payload = f"{shared_url}|{category}|{color}"
+        encoded = urllib.parse.quote(full_payload, safe='')
+        button_url = f"https://sortik.app/?uploadnew={encoded}"
+        buttons.append([InlineKeyboardButton(category, web_app={"url": button_url})])
 
     row = []
     for idx, (category, color) in enumerate(default_categories.items(), 1):
-        row.append(InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}"))
+        full_payload = f"{shared_url}|{category}|{color}"
+        encoded = urllib.parse.quote(full_payload, safe='')
+        button_url = f"https://sortik.app/?uploadnew={encoded}"
+        row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
         if idx % 3 == 0 or idx == len(default_categories):
             buttons.append(row)
             row = []
@@ -144,25 +197,21 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    links = load_links(user_id)
+    user_cache = load_cache(user_id)
 
-    if not links:
+    if not user_cache:
         await update.message.reply_text("Кеш пуст.")
         return
 
-    # Формируем строку для upload
-    upload_data = []
-    for link in links:
-        url = link['url']
-        category = link['category'] if link['category'] else "Uncategorized"
-        color = link['color'] if link['color'] else "gray"
-        upload_data.append(f"{url}|{category}|{color}")
-    upload_string = "|||".join(upload_data)
-    app_url = f"https://sortik.app/?upload={urllib.parse.quote(upload_string, safe='')}"
+    response = "Сохраненный кеш:\n"
+    for url, data in user_cache.items():
+        timestamp = data['timestamp']
+        html_preview = data['html_content'][:100] + "..." if len(data['html_content']) > 100 else data['html_content']
+        resources = data['resources']
+        resources_count = len(resources) if resources else 0
+        response += f"URL: {url}\nВремя: {timestamp}\nHTML: {html_preview}\nРесурсы: {resources_count} файлов\n\n"
 
-    buttons = [[InlineKeyboardButton("Открыть приложение с кешом", web_app={"url": app_url})]]
-    reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text("Открыть приложение с кешом:", reply_markup=reply_markup)
+    await update.message.reply_text(response)
 
 async def category_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -216,11 +265,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         shared_url = context.user_data.get('current_url')
         if new_category and shared_url:
             await save_custom_category(user_id, new_category, color)
-            await save_link(user_id, shared_url, new_category, color)
             if 'category_color_message' in context.user_data:
                 await context.user_data['category_color_message'].delete()
                 del context.user_data['category_color_message']
-            
+
             default_categories = {
                 "News": "blue",
                 "Tech": "green",
@@ -229,18 +277,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Music": "purple"
             }
             custom_categories = load_custom_categories(user_id)
-            
+
             buttons = []
             row = []
             row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
             buttons.append(row)
 
             for category, color in custom_categories.items():
-                buttons.append([InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}")])
+                full_payload = f"{shared_url}|{category}|{color}"
+                encoded = urllib.parse.quote(full_payload, safe='')
+                button_url = f"https://sortik.app/?uploadnew={encoded}"
+                buttons.append([InlineKeyboardButton(category, web_app={"url": button_url})])
 
             row = []
             for idx, (category, color) in enumerate(default_categories.items(), 1):
-                row.append(InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}"))
+                full_payload = f"{shared_url}|{category}|{color}"
+                encoded = urllib.parse.quote(full_payload, safe='')
+                button_url = f"https://sortik.app/?uploadnew={encoded}"
+                row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
                 if idx % 3 == 0 or idx == len(default_categories):
                     buttons.append(row)
                     row = []
@@ -250,53 +304,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
                 reply_markup=reply_markup
             )
-    elif data[0] == "assign":
-        shared_url, category, color = data[1], data[2], data[3]
-        await save_link(user_id, shared_url, category, color)
-        if 'last_url_message' in context.user_data:
-            await context.user_data['last_url_message'].delete()
-            del context.user_data['last_url_message']
-        
-        default_categories = {
-            "News": "blue",
-            "Tech": "green",
-            "Fun": "yellow",
-            "Sport": "red",
-            "Music": "purple"
-        }
-        custom_categories = load_custom_categories(user_id)
-        
-        buttons = []
-        row = []
-        row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
-        buttons.append(row)
 
-        for category, color in custom_categories.items():
-            buttons.append([InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}")])
-
-        row = []
-        for idx, (category, color) in enumerate(default_categories.items(), 1):
-            row.append(InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}"))
-            if idx % 3 == 0 or idx == len(default_categories):
-                buttons.append(row)
-                row = []
-
-        reply_markup = InlineKeyboardMarkup(buttons)
-        context.user_data['last_url_message'] = await query.message.reply_text(
-            f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
-            reply_markup=reply_markup
-        )
+async def webhook(request):
+    app = request.app['bot']
+    update = Update.de_json(await request.json(), app.bot)
+    await app.process_update(update)
+    return web.Response(text="OK")
 
 def main():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN environment variable not set")
+    if not WEBHOOK_URL:
+        raise ValueError("WEBHOOK_URL environment variable not set")
 
     init_db()
 
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("view_cache", view_cache))
+    app.add_handler(CommandHandler("categoryadd", category_add))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
+    web_app = web.Application()
+    web_app['bot'] = app
+    web_app.add_routes([web.post('/', webhook)])
+
+    print("Бот запускается с вебхуками...")
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="",
+        webhook_url=f"{WEBHOOK_URL}"
+    )
+    web.run_app(web_app, host="0.0.0.0", port=PORT)
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("view_cache", view_cache))
-    application.add_handler(CommandHandler("lc", view_cache))
     application.add_handler(CommandHandler("categoryadd", category_add))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
