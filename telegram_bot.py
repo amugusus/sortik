@@ -149,5 +149,5 @@ def main():
     print("Бот запущен...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-def __name__ == "__main__":
+if __name__ == "__main__":
     main()
