@@ -8,7 +8,6 @@ import aiohttp
 from datetime import datetime
 import sqlite3
 from pathlib import Path
-from bs4 import BeautifulSoup
 import json
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -36,6 +35,16 @@ def init_db():
             color TEXT,
             timestamp TEXT,
             PRIMARY KEY (user_id, category)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS link_cache (
+            user_id INTEGER,
+            url TEXT,
+            category TEXT,
+            color TEXT,
+            timestamp TEXT,
+            PRIMARY KEY (user_id, url)
         )
     ''')
     conn.commit()
@@ -71,6 +80,18 @@ def load_custom_categories(user_id: int) -> Dict[str, str]:
         print(f"Error loading custom categories: {e}")
         return {}
 
+def load_link_cache(user_id: int) -> list:
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT url, category, color, timestamp FROM link_cache WHERE user_id = ? ORDER BY timestamp ASC', (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [{'url': row[0], 'category': row[1], 'color': row[2], 'timestamp': row[3]} for row in rows]
+    except Exception as e:
+        print(f"Error loading link cache: {e}")
+        return []
+
 async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[str, str]):
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -99,6 +120,20 @@ async def save_custom_category(user_id: int, category: str, color: str):
         conn.close()
     except Exception as e:
         print(f"Error saving custom category: {e}")
+
+async def save_link_cache(user_id: int, url: str, category: str, color: str):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        timestamp = datetime.now().isoformat()
+        cursor.execute('''
+            INSERT OR REPLACE INTO link_cache (user_id, url, category, color, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user_id, url, category, color, timestamp))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error saving link cache: {e}")
 
 async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
     try:
@@ -203,6 +238,25 @@ async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(response)
 
+async def load_link_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    link_cache = load_link_cache(user_id)
+
+    if not link_cache:
+        await update.message.reply_text("Кеш ссылок пуст.")
+        return
+
+    link_data = []
+    for entry in link_cache:
+        link_data.append(f"{entry['url']}|{entry['category']}|{entry['color']}")
+    full_payload = "|||".join(link_data)
+    encoded = urllib.parse.quote(full_payload, safe='')
+    app_url = f"https://sortik.app/?upload={encoded}"
+
+    buttons = [[InlineKeyboardButton("Открыть приложение с кешом", web_app={"url": app_url})]]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text("Открыть приложение с кешом:", reply_markup=reply_markup)
+
 async def category_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if 'last_url_message' in context.user_data:
@@ -255,6 +309,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         shared_url = context.user_data.get('current_url')
         if new_category and shared_url:
             await save_custom_category(user_id, new_category, color)
+            await save_link_cache(user_id, shared_url, new_category, color)
             if 'category_color_message' in context.user_data:
                 await context.user_data['category_color_message'].delete()
                 del context.user_data['category_color_message']
@@ -297,6 +352,7 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("view_cache", view_cache))
+    application.add_handler(CommandHandler("lc", load_link_cache))
     application.add_handler(CommandHandler("categoryadd", category_add))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
