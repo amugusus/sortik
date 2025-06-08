@@ -1,5 +1,5 @@
 import os
-import reMore actions
+import re
 import urllib.parse
 from typing import Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -7,7 +7,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import aiohttp
 from datetime import datetime
 import sqlite3
-from datetime import datetime
 from pathlib import Path
 from bs4 import BeautifulSoup
 import json
@@ -26,8 +25,6 @@ def init_db():
             url TEXT,
             html_content TEXT,
             resources TEXT,
-            category TEXT,
-            color TEXT,
             timestamp TEXT,
             PRIMARY KEY (user_id, url)
         )
@@ -49,7 +46,6 @@ def load_cache(user_id: int) -> Dict[str, Dict[str, Any]]:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute('SELECT url, html_content, resources, timestamp FROM cache WHERE user_id = ?', (user_id,))
-        cursor.execute('SELECT url, category, color, timestamp FROM cache WHERE user_id = ?', (user_id,))
         rows = cursor.fetchall()
         conn.close()
         return {
@@ -57,9 +53,6 @@ def load_cache(user_id: int) -> Dict[str, Dict[str, Any]]:
                 'html_content': row[1],
                 'resources': json.loads(row[2]) if row[2] else {},
                 'timestamp': datetime.fromisoformat(row[3])
-                'category': row[1],
-                'color': row[2],
-                'timestamp': row[3]
             } for row in rows
         }
     except Exception as e:
@@ -70,7 +63,7 @@ def load_custom_categories(user_id: int) -> Dict[str, str]:
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ? ORDER BY timestamp DESC', (user_id,))
+        cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ?', (user_id,))
         rows = cursor.fetchall()
         conn.close()
         return {row[0]: row[1] for row in rows}
@@ -79,7 +72,6 @@ def load_custom_categories(user_id: int) -> Dict[str, str]:
         return {}
 
 async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[str, str]):
-async def save_cache(user_id: int, url: str, category: str, color: str):
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -87,10 +79,8 @@ async def save_cache(user_id: int, url: str, category: str, color: str):
         resources_json = json.dumps(resources)
         cursor.execute('''
             INSERT OR REPLACE INTO cache (user_id, url, html_content, resources, timestamp)
-            INSERT OR REPLACE INTO cache (user_id, url, category, color, timestamp)
             VALUES (?, ?, ?, ?, ?)
         ''', (user_id, url, html_content, resources_json, timestamp))
-        ''', (user_id, url, category, color, timestamp))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -145,10 +135,9 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
         return f"Error: {str(e)}", {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    await update.message.geply_text(
         "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
         "HTML и ресурсы сайта будут сохранены в кеш."
-        "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы сохранить ссылку и открыть в мини-приложении."
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -175,37 +164,39 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Music": "purple"
     }
     custom_categories = load_custom_categories(user_id)
-
+    
     buttons = []
-    row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
-    all_categories = {**custom_categories, **default_categories}
-    idx = 1
-    for category, color in all_categories.items():
+    row = []
+    row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
+    buttons.append(row)
+
+    for category, color in custom_categories.items():
+        full_payload = f"{shared_url}|{category}|{color}"
+        encoded = urllib.parse.quote(full_payload, safe='')
+        button_url = f"https://sortik.app/?uploadnew={encoded}"
+        buttons.append([InlineKeyboardButton(category, web_app={"url": button_url})])
+
+    row = []
+    for idx, (category, color) in enumerate(default_categories.items(), 1):
         full_payload = f"{shared_url}|{category}|{color}"
         encoded = urllib.parse.quote(full_payload, safe='')
         button_url = f"https://sortik.app/?uploadnew={encoded}"
         row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-        row.append(InlineKeyboardButton(category, callback_data=f"choose_category|{shared_url}|{category}|{color}"))
-        if len(row) == 3 or (idx == len(all_categories) and row):
+        if idx % 3 == 0 or idx == len(default_categories):
             buttons.append(row)
             row = []
-        idx += 1
 
     reply_markup = InlineKeyboardMarkup(buttons)
     context.user_data['last_url_message'] = await update.message.reply_text(
         f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
-        f"Ссылка: {shared_url}\nВыберите категорию:",
         reply_markup=reply_markup
     )
 
 async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
-async def open_cached_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_cache = load_cache(user_id)
 
     if not user_cache:
-    cache = load_cache(user_id)
-    if not cache:
         await update.message.reply_text("Кеш пуст.")
         return
 
@@ -216,21 +207,8 @@ async def open_cached_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
         resources = data['resources']
         resources_count = len(resources) if resources else 0
         response += f"URL: {url}\nВремя: {timestamp}\nHTML: {html_preview}\nРесурсы: {resources_count} файлов\n\n"
-    parts = []
-    for url, data in cache.items():
-        category = data.get('category', 'Uncategorized')
-        color = data.get('color', 'gray')
-        parts.append(f"{url}|{category}|{color}")
-
-    upload_string = "|||".join(parts)
-    app_url = f"https://sortik.app/?upload={urllib.parse.quote(upload_string)}"
 
     await update.message.reply_text(response)
-    button = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Открыть приложение с кешом", web_app={"url": app_url})]
-    ])
-
-    await update.message.reply_text("Открыть приложение с кешом:", reply_markup=button)
 
 async def category_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -278,13 +256,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['category_add_trigger'] = 'button'
         context.user_data['current_url'] = shared_url
         await query.message.reply_text("Назовите новую категорию:")
-
     elif data[0] == "color":
         color = data[1]
         new_category = context.user_data.get('new_category')
         shared_url = context.user_data.get('current_url')
         if new_category and shared_url:
-        if new_category:
             await save_custom_category(user_id, new_category, color)
             if 'category_color_message' in context.user_data:
                 await context.user_data['category_color_message'].delete()
@@ -300,29 +276,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             custom_categories = load_custom_categories(user_id)
             
             buttons = []
-            row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
-            all_categories = {**custom_categories, **default_categories}
-            idx = 1
-            for category, color in all_categories.items():
+            row = []
+            row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
+            buttons.append(row)
+
+            for category, color in custom_categories.items():
+                full_payload = f"{shared_url}|{category}|{color}"
+                encoded = urllib.parse.quote(full_payload, safe='')
+                button_url = f"https://sortik.app/?uploadnew={encoded}"
+                buttons.append([InlineKeyboardButton(category, web_app={"url": button_url})])
+
+            row = []
+            for idx, (category, color) in enumerate(default_categories.items(), 1):
                 full_payload = f"{shared_url}|{category}|{color}"
                 encoded = urllib.parse.quote(full_payload, safe='')
                 button_url = f"https://sortik.app/?uploadnew={encoded}"
                 row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-                if len(row) == 3 or (idx == len(all_categories) and row):
+                if idx % 3 == 0 or idx == len(default_categories):
                     buttons.append(row)
                     row = []
-                idx += 1
-            await query.message.reply_text(f"Категория '{new_category}' сохранена.")
 
             reply_markup = InlineKeyboardMarkup(buttons)
             context.user_data['last_url_message'] = await query.message.reply_text(
                 f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
                 reply_markup=reply_markup
             )
-    elif data[0] == "choose_category":
-        url, category, color = data[1], data[2], data[3]
-        await save_cache(user_id, url, category, color)
-        await query.message.reply_text(f"Ссылка сохранена в категории '{category}'.")
 
 def main():
     if not BOT_TOKEN:
@@ -334,7 +312,6 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("view_cache", view_cache))
     application.add_handler(CommandHandler("categoryadd", category_add))
-    application.add_handler(CommandHandler("lc", open_cached_links))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
 
