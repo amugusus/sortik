@@ -4,7 +4,6 @@ import urllib.parse
 from typing import Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-import aiohttp
 from datetime import datetime
 import sqlite3
 from pathlib import Path
@@ -72,7 +71,7 @@ def load_custom_categories(user_id: int) -> Dict[str, str]:
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ? ORDER BY timestamp DESC', (user_id,))
+        cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ? ORDER BY timestamp ASC', (user_id,))
         rows = cursor.fetchall()
         conn.close()
         return {row[0]: row[1] for row in rows}
@@ -126,53 +125,22 @@ async def save_link_cache(user_id: int, url: str, category: str, color: str):
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         timestamp = datetime.now().isoformat()
-        cursor.execute('''
+        cursor.execute(
+            '''
             INSERT OR REPLACE INTO link_cache (user_id, url, category, color, timestamp)
             VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, url, category, color, timestamp))
+            ''',
+            (user_id, url, category, color, timestamp)
+        )
         conn.commit()
+    except Exception as e:
+        print(f"Error saving link cache: {str(e)}")
+    finally:
         conn.close()
-    except Exception as e:
-        print(f"Error saving link cache: {e}")
-
-async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as response:
-                if response.status != 200:
-                    return f"Error: Failed to fetch content (status {response.status})", {}
-                html_content = await response.text()
-
-            soup = BeautifulSoup(html_content, 'html.parser')
-            resources = {}
-            resource_tags = [
-                ('link', 'href', r'\.css$'),
-                ('script', 'src', r'\.js$'),
-                ('img', 'src', r'\.(png|jpg|jpeg|gif)$')
-            ]
-
-            for tag, attr, pattern in resource_tags:
-                for element in soup.find_all(tag, attrs={attr: re.compile(pattern)}):
-                    resource_url = element.get(attr)
-                    if resource_url:
-                        if not resource_url.startswith(('http://', 'https://')):
-                            resource_url = urllib.parse.urljoin(url, resource_url)
-                        try:
-                            async with session.get(resource_url, timeout=5) as res:
-                                if res.status == 200:
-                                    resources[resource_url] = await res.text()
-                                else:
-                                    resources[resource_url] = f"Error: Status {res.status}"
-                        except Exception as e:
-                            resources[resource_url] = f"Error: {str(e)}"
-            return html_content, resources
-    except Exception as e:
-        return f"Error: {str(e)}", {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
-        "HTML и ресурсы сайта будут сохранены в кеш."
+        "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении."
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,15 +149,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     urls = re.findall(URL_REGEX, message_text)
 
     if not urls:
-        await update.message.reply_text("Пожалуйста, отправьте корректную ссылку.")
+        await update.message.reply_text("Please send a valid URL.")
         return
 
     shared_url = urls[0]
-    user_cache = load_cache(user_id)
-
-    if shared_url not in user_cache:
-        html_content, resources = await fetch_website_content(shared_url)
-        await save_cache(user_id, shared_url, html_content, resources)
 
     default_categories = {
         "News": "blue",
@@ -208,33 +171,36 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         full_payload = f"{shared_url}|{category}|{color}"
         encoded = urllib.parse.quote(full_payload, safe='')
         button_url = f"https://sortik.app/?uploadnew={encoded}"
-        row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
+        row.append(InlineKeyboardButton(category[:10], web_app={"url": button_url}))  # Truncate category name to avoid button data limit
         if len(row) == 3 or (idx == len(all_categories) and row):
-            buttons.append(row)
+            buttons.append(row[:])
             row = []
         idx += 1
 
     reply_markup = InlineKeyboardMarkup(buttons)
-    context.user_data['last_url_message'] = await update.message.reply_text(
-        f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
-        reply_markup=reply_markup
-    )
+    try:
+        context.user_data['last_url_message'] = await update.message.reply_text(
+            f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
+            reply_markup=reply_markup
+        )
+    except telegram.error.BadRequest as e:
+        await update.message.reply_text("Error: URL or button data too long. Please try a shorter URL or contact support.")
 
 async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_cache = load_cache(user_id)
 
     if not user_cache:
-        await update.message.reply_text("Кеш пуст.")
+        await update.message.reply_text("Кэш пуст.")
         return
 
-    response = "Сохраненный кеш:\n"
+    response = "Сохраненный кэш:\n"
     for url, data in user_cache.items():
         timestamp = data['timestamp']
         html_preview = data['html_content'][:100] + "..." if len(data['html_content']) > 100 else data['html_content']
         resources = data['resources']
         resources_count = len(resources) if resources else 0
-        response += f"URL: {url}\nВремя: {timestamp}\nHTML: {html_preview}\nРесурсы: {resources_count} файлов\n\n"
+        response += f"URL: {url}\nВремя: {timestamp}\nHTML: {html_preview}\nРесурсы: {resources_count}\n\n"
 
     await update.message.reply_text(response)
 
@@ -243,7 +209,7 @@ async def load_link_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link_cache = load_link_cache(user_id)
 
     if not link_cache:
-        await update.message.reply_text("Кеш ссылок пуст.")
+        await update.message.reply_text("Кэш ссылок пуст.")
         return
 
     link_data = []
@@ -255,7 +221,12 @@ async def load_link_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buttons = [[InlineKeyboardButton("Открыть приложение с кешом", web_app={"url": app_url})]]
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text("Открыть приложение с кешом:", reply_markup=reply_markup)
+    try:
+        await update.message.reply_text("Открыть приложение с кешом:", reply_markup=reply_markup)
+    except telegram.error.BadRequest:
+        await update.message.reply_text(
+            "Error: Cache URL too long. Please clear some links or contact support."
+        )
 
 async def category_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -263,8 +234,9 @@ async def category_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.user_data['last_url_message'].delete()
         del context.user_data['last_url_message']
     context.user_data['category_add_mode'] = True
+    = True
     context.user_data['category_add_trigger'] = 'command'
-    await update.message.reply_text("Назовите новую категорию:")
+    await update.message.reply_text("Назови новую категорию:")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -276,8 +248,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = []
         for idx, color in enumerate(colors, 1):
             row.append(InlineKeyboardButton(color, callback_data=f"color|{color}"))
-            if idx % 3 == 0 or idx == len(colors):
-                buttons.append(row)
+            if len(row) == 3 or idx == len(colors):
+                buttons.append(row[:])
                 row = []
         reply_markup = InlineKeyboardMarkup(buttons)
         context.user_data['category_color_message'] = await update.message.reply_text(
@@ -302,7 +274,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['category_add_mode'] = True
         context.user_data['category_add_trigger'] = 'button'
         context.user_data['current_url'] = shared_url
-        await query.message.reply_text("Назовите новую категорию:")
+        await query.message.reply_text("Назови категорию:")
     elif data[0] == "color":
         color = data[1]
         new_category = context.user_data.get('new_category')
@@ -331,17 +303,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 full_payload = f"{shared_url}|{category}|{color}"
                 encoded = urllib.parse.quote(full_payload, safe='')
                 button_url = f"https://sortik.app/?uploadnew={encoded}"
-                row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
+                row.append(InlineKeyboardButton(category[:10], web_app={"url": button_url}))
                 if len(row) == 3 or (idx == len(all_categories) and row):
-                    buttons.append(row)
+                    buttons.append(row[:])
                     row = []
                 idx += 1
 
             reply_markup = InlineKeyboardMarkup(buttons)
-            context.user_data['last_url_message'] = await query.message.reply_text(
-                f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
-                reply_markup=reply_markup
-            )
+            try:
+                context.user_data['last_url_message'] = await query.message.reply_text(
+                    f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
+                    reply_markup=reply_markup
+                )
+            except telegram.error.BadRequest:
+                await query.message.reply_text(
+                    "Error: URL or button data too long. Please try a shorter URL or contact support."
+                )
 
 def main():
     if not BOT_TOKEN:
@@ -357,7 +334,7 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
 
-    print("Бот запущен...")
+    print("Bot launched...")
     application.run_polling()
 
 if __name__ == "__main__":
