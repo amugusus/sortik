@@ -4,22 +4,29 @@ import urllib.parse
 from typing import Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.error import BadRequest
+import logging
 from datetime import datetime
 import sqlite3
 from pathlib import Path
 import json
 
+# Set up logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-URL_REGEX = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
+URL_REGEX = r"https?://[^\s<>"]+|www\.[^\s<>"]+"
 DB_FILE = "web_cache.db"
 
 def init_db():
+    """Initialize SQLite database tables."""
     db_path = Path(DB_FILE)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cache (
-            user_id INTEGER,
+            user_id TEXT,
             url TEXT,
             html_content TEXT,
             resources TEXT,
@@ -29,16 +36,16 @@ def init_db():
     ''')
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS custom_categories (
-            user_id INTEGER,
+            user_id TEXT,
             category TEXT,
             color TEXT,
             timestamp TEXT,
             PRIMARY KEY (user_id, category)
         )
-    ''')
+        ''')
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS link_cache (
-            user_id INTEGER,
+            user_id TEXT,
             url TEXT,
             category TEXT,
             color TEXT,
@@ -49,49 +56,53 @@ def init_db():
     conn.commit()
     conn.close()
 
-def load_cache(user_id: int) -> Dict[str, Dict[str, Any]]:
+def load_cache(user_id: str) -> Dict[str, Dict[str, Any]]:
+    """Load cached website content for a user."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute('SELECT url, html_content, resources, timestamp FROM cache WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT url, html_content, resources, timestamp FROM cache WHERE user_id = ?', (str(user_id),))
         rows = cursor.fetchall()
         conn.close()
         return {
             row[0]: {
-                'html_content': row[1],
-                'resources': json.loads(row[2]) if row[2] else {},
+                'html_content': row[0],
+                'resources': json.loads(row[2]) if row[2] else None,
                 'timestamp': datetime.fromisoformat(row[3])
             } for row in rows
         }
     except Exception as e:
-        print(f"Error loading cache: {e}")
+        logger.error(f"Error loading cache: {e}")
         return {}
 
-def load_custom_categories(user_id: int) -> Dict[str, str]:
+def load_custom_categories(user_id: str) -> Dict[str, str]:
+    """Load custom categories for a user."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ? ORDER BY timestamp ASC', (user_id,))
+        cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ? ORDER BY timestamp ASC', (str(user_id),))
         rows = cursor.fetchall()
         conn.close()
         return {row[0]: row[1] for row in rows}
     except Exception as e:
-        print(f"Error loading custom categories: {e}")
+        logger.error(f"Error loading custom categories: {e}")
         return {}
 
-def load_link_cache(user_id: int) -> list:
+def load_link_cache(user_id: str) -> list:
+    """Load cached links for a user."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute('SELECT url, category, color, timestamp FROM link_cache WHERE user_id = ? ORDER BY timestamp ASC', (user_id,))
+        cursor.execute('SELECT url, category, color, timestamp FROM link_cache WHERE user_id = ? ORDER BY timestamp ASC', (str(user_id),))
         rows = cursor.fetchall()
         conn.close()
         return [{'url': row[0], 'category': row[1], 'color': row[2], 'timestamp': row[3]} for row in rows]
     except Exception as e:
-        print(f"Error loading link cache: {e}")
+        logger.error(f"Error loading link cache: {e}")
         return []
 
-async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[str, str]):
+async def save_cache(user_id: str, url: str, html_content: str, resources: Dict[str, str]):
+    """Save website content to cache (unused)."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -100,13 +111,14 @@ async def save_cache(user_id: int, url: str, html_content: str, resources: Dict[
         cursor.execute('''
             INSERT OR REPLACE INTO cache (user_id, url, html_content, resources, timestamp)
             VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, url, html_content, resources_json, timestamp))
+        ''', (str(user_id), url, html_content, resources_json, timestamp))
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Error saving cache: {e}")
+        logger.error(f"Error saving cache: {e}")
 
-async def save_custom_category(user_id: int, category: str, color: str):
+async def save_custom_category(user_id: str, category: str, color: str):
+    """Save a custom category for a user."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -114,36 +126,35 @@ async def save_custom_category(user_id: int, category: str, color: str):
         cursor.execute('''
             INSERT OR REPLACE INTO custom_categories (user_id, category, color, timestamp)
             VALUES (?, ?, ?, ?)
-        ''', (user_id, category, color, timestamp))
+        ''', (str(user_id), category, color, timestamp))
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Error saving custom category: {e}")
+        logger.error(f"Error saving custom category: {e}")
 
-async def save_link_cache(user_id: int, url: str, category: str, color: str):
+async def save_link_cache(user_id: str, url: str, category: str, color: str):
+    """Save a link with its category and color to cache."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         timestamp = datetime.now().isoformat()
-        cursor.execute(
-            '''
+        cursor.execute('''
             INSERT OR REPLACE INTO link_cache (user_id, url, category, color, timestamp)
             VALUES (?, ?, ?, ?, ?)
-            ''',
-            (user_id, url, category, color, timestamp)
-        )
+        ''', (str(user_id), url, category, color, timestamp))
         conn.commit()
-    except Exception as e:
-        print(f"Error saving link cache: {str(e)}")
-    finally:
         conn.close()
+    except Exception as e:
+        logger.error(f"Error saving link cache: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command."""
     await update.message.reply_text(
         "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении."
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming URLs."""
     user_id = update.effective_user.id
     message_text = update.message.text
     urls = re.findall(URL_REGEX, message_text)
@@ -161,7 +172,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Sport": "red",
         "Music": "purple"
     }
-    custom_categories = load_custom_categories(user_id)
+    custom_categories = load_custom_categories(str(user_id))
     
     buttons = []
     row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
@@ -171,7 +182,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         full_payload = f"{shared_url}|{category}|{color}"
         encoded = urllib.parse.quote(full_payload, safe='')
         button_url = f"https://sortik.app/?uploadnew={encoded}"
-        row.append(InlineKeyboardButton(category[:10], web_app={"url": button_url}))  # Truncate category name to avoid button data limit
+        row.append(InlineKeyboardButton(category[:10], web_app={"url": button_url}))  # Truncate to avoid button data limit
         if len(row) == 3 or (idx == len(all_categories) and row):
             buttons.append(row[:])
             row = []
@@ -183,12 +194,14 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
             reply_markup=reply_markup
         )
-    except telegram.error.BadRequest as e:
-        await update.message.reply_text("Error: URL or button data too long. Please try a shorter URL or contact support.")
+    except BadRequest as e:
+        logger.error(f"BadRequest in handle_url: {e}")
+        await update.message.reply_text("Error: URL or button data too long. Please try a shorter URL.")
 
 async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View cached website content."""
     user_id = update.effective_user.id
-    user_cache = load_cache(user_id)
+    user_cache = load_cache(str(user_id))
 
     if not user_cache:
         await update.message.reply_text("Кэш пуст.")
@@ -205,8 +218,9 @@ async def view_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response)
 
 async def load_link_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Load all cached links with /lc command."""
     user_id = update.effective_user.id
-    link_cache = load_link_cache(user_id)
+    link_cache = load_link_cache(str(user_id))
 
     if not link_cache:
         await update.message.reply_text("Кэш ссылок пуст.")
@@ -223,27 +237,29 @@ async def load_link_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(buttons)
     try:
         await update.message.reply_text("Открыть приложение с кешом:", reply_markup=reply_markup)
-    except telegram.error.BadRequest:
+    except BadRequest as e:
+        logger.error(f"BadRequest in load_link_cache: {e}")
         await update.message.reply_text(
             "Error: Cache URL too long. Please clear some links or contact support."
         )
 
 async def category_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /categoryadd command."""
     user_id = update.effective_user.id
     if 'last_url_message' in context.user_data:
         await context.user_data['last_url_message'].delete()
         del context.user_data['last_url_message']
-    context.user_data['category_add_mode'] = True
-    = True
+    context.user_data['category_add'] = True
     context.user_data['category_add_trigger'] = 'command'
-    await update.message.reply_text("Назови новую категорию:")
+    await update.message.reply_text("Type new category name:")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming messages."""
     user_id = update.effective_user.id
-    if context.user_data.get('category_add_mode', False):
+    if context.user_data.get('category_add', False):
         new_category = update.message.text.strip()
-        context.user_data['new_category'] = new_category
-        colors = ['red', 'blue', 'green', 'yellow', 'purple', 'pink', 'indigo', 'gray']
+        context.user_data['category'] = new_category
+        colors = ['red', 'blue', 'green', 'yellow', 'purple', 'pink', 'indigo']
         buttons = []
         row = []
         for idx, color in enumerate(colors, 1):
@@ -252,15 +268,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 buttons.append(row[:])
                 row = []
         reply_markup = InlineKeyboardMarkup(buttons)
-        context.user_data['category_color_message'] = await update.message.reply_text(
-            f"Выберите цвет для категории '{new_category}':",
+        context.user_data['message'] = await update_message.reply_text(
+            f"Choose a color for category '{new_category}':",
             reply_markup=reply_markup
         )
-        context.user_data['category_add_mode'] = False
+        context.user_data']['category_add'] = False
     else:
         await handle_url(update, context)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle callback queries."""
     query = update.callback_query
     await query.answer()
     data = query.data.split('|')
@@ -271,56 +288,62 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 'last_url_message' in context.user_data:
             await context.user_data['last_url_message'].delete()
             del context.user_data['last_url_message']
-        context.user_data['category_add_mode'] = True
+        context.user_data['category_add'] = True
         context.user_data['category_add_trigger'] = 'button'
         context.user_data['current_url'] = shared_url
-        await query.message.reply_text("Назови категорию:")
+        await query.message.reply_text("Type new category:")
     elif data[0] == "color":
         color = data[1]
-        new_category = context.user_data.get('new_category')
+        new_category = context.user_data.get('category')
         shared_url = context.user_data.get('current_url')
         if new_category and shared_url:
-            await save_custom_category(user_id, new_category, color)
-            await save_link_cache(user_id, shared_url, new_category, color)
-            if 'category_color_message' in context.user_data:
-                await context.user_data['category_color_message'].delete()
-                del context.user_data['category_color_message']
-            
-            default_categories = {
-                "News": "blue",
-                "Tech": "green",
-                "Fun": "yellow",
-                "Sport": "red",
-                "Music": "purple"
-            }
-            custom_categories = load_custom_categories(user_id)
-            
-            buttons = []
-            row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
-            all_categories = {**custom_categories, **default_categories}
-            idx = 1
-            for category, color in all_categories.items():
-                full_payload = f"{shared_url}|{category}|{color}"
-                encoded = urllib.parse.quote(full_payload, safe='')
-                button_url = f"https://sortik.app/?uploadnew={encoded}"
-                row.append(InlineKeyboardButton(category[:10], web_app={"url": button_url}))
-                if len(row) == 3 or (idx == len(all_categories) and row):
-                    buttons.append(row[:])
-                    row = []
-                idx += 1
-
-            reply_markup = InlineKeyboardMarkup(buttons)
             try:
-                context.user_data['last_url_message'] = await query.message.reply_text(
-                    f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
-                    reply_markup=reply_markup
-                )
-            except telegram.error.BadRequest:
-                await query.message.reply_text(
-                    "Error: URL or button data too long. Please try a shorter URL or contact support."
-                )
+                await save_custom_category(str(user_id), new_category, color)
+                await save_link_cache(str(user_id), shared_url, new_category, color)
+                if context.user_data.get('message'):
+                    await context.user_data['message']().delete()
+                    del context.user_data']['message']
+                
+                default_categories = [
+                    "News": "blue",
+                    "Tech": "green",
+                    "Fun": "yellow",
+                    "Sport": "red",
+                    "Events": "purple"
+                ]
+                custom_categories = load_custom_categories(str(user_id))
+                
+                buttons = []
+                row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
+                all_categories = {**custom_categories, **default_categories}
+                idx = 1
+                for category, color in all_categories.items():
+                    full_payload = f"{shared_url}|{category}|{color}"
+                    encoded = urllib.parse.quote(full_payload, safe='')
+                    button_url = f"https://sortik.app/?uploadnew={encoded}"
+                    row.append(InlineKeyboardButton(category[:10], web_app={"url": button_url}))
+                    if len(row) == 3 or (idx == len(all_categories) and row):
+                        buttons.append(row[:])
+                        row = []
+                    idx += 1
+
+                reply_markup = InlineKeyboardMarkup(buttons)
+                try:
+                    context.user_data['last_url_message'] = await query.message.reply_text(
+                        f"Ссылка: {shared_url}\nВыберите категорию для сорта:",
+                        reply_markup=reply_markup
+                    )
+                except BadRequest as e:
+                    logger.error(f"BadRequest in handle_callback: {e}")
+                    await query.message.reply_text(
+                        "Error: URL or button data too long. Please try a shorter URL."
+                    )
+            except Exception as e:
+                logger.error(f"Error in handle_callback: {e}")
+                await query.message.reply_text("An error occurred. Please try again.")
 
 def main():
+    """Main function to start the bot."""
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN environment variable not set")
 
@@ -334,8 +357,8 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
 
-    print("Bot launched...")
-    application.run_polling()
+    logger.info("Bot launched...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
