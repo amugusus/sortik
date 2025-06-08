@@ -1,5 +1,5 @@
-import os
-import reMore actions
+import osMore actions
+import re
 import urllib.parse
 from typing import Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -10,13 +10,10 @@ import sqlite3
 from pathlib import Path
 from bs4 import BeautifulSoup
 import json
-from aiohttp import web
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 URL_REGEX = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
 DB_FILE = "web_cache.db"
-PORT = int(os.getenv("PORT", 8443))  # Render предоставляет PORT, по умолчанию 8443
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Укажите ваш URL, например, https://your-app-name.onrender.com
 
 def init_db():
     db_path = Path(DB_FILE)
@@ -66,6 +63,7 @@ def load_custom_categories(user_id: int) -> Dict[str, str]:
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
+        cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ? ORDER BY timestamp DESC', (user_id,))
         cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ?', (user_id,))
         rows = cursor.fetchall()
         conn.close()
@@ -138,8 +136,8 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
         return f"Error: {str(e)}", {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.geply_text(
     await update.message.reply_text(
+    await update.message.geply_text(
         "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
         "HTML и ресурсы сайта будут сохранены в кеш."
     )
@@ -170,6 +168,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     custom_categories = load_custom_categories(user_id)
 
     buttons = []
+    row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
+    all_categories = {**custom_categories, **default_categories}
+    idx = 1
+    for category, color in all_categories.items():
     row = []
     row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
     buttons.append(row)
@@ -186,9 +188,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         encoded = urllib.parse.quote(full_payload, safe='')
         button_url = f"https://sortik.app/?uploadnew={encoded}"
         row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
+        if len(row) == 3 or (idx == len(all_categories) and row):
         if idx % 3 == 0 or idx == len(default_categories):
             buttons.append(row)
             row = []
+        idx += 1
 
     reply_markup = InlineKeyboardMarkup(buttons)
     context.user_data['last_url_message'] = await update.message.reply_text(
@@ -280,6 +284,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             custom_categories = load_custom_categories(user_id)
 
             buttons = []
+            row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
+            all_categories = {**custom_categories, **default_categories}
+            idx = 1
+            for category, color in all_categories.items():
             row = []
             row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
             buttons.append(row)
@@ -296,9 +304,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 encoded = urllib.parse.quote(full_payload, safe='')
                 button_url = f"https://sortik.app/?uploadnew={encoded}"
                 row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
+                if len(row) == 3 or (idx == len(all_categories) and row):
                 if idx % 3 == 0 or idx == len(default_categories):
                     buttons.append(row)
                     row = []
+                idx += 1
 
             reply_markup = InlineKeyboardMarkup(buttons)
             context.user_data['last_url_message'] = await query.message.reply_text(
@@ -306,17 +316,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
 
-async def webhook(request):
-    app = request.app['bot']
-    update = Update.de_json(await request.json(), app.bot)
-    await app.process_update(update)
-    return web.Response(text="OK")
-
 def main():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN environment variable not set")
-    if not WEBHOOK_URL:
-        raise ValueError("WEBHOOK_URL environment variable not set")
 
     init_db()
 
@@ -329,25 +331,6 @@ def main():
 
     print("Бот запущен...")
     application.run_polling()
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("view_cache", view_cache))
-    app.add_handler(CommandHandler("categoryadd", category_add))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-
-    web_app = web.Application()
-    web_app['bot'] = app
-    web_app.add_routes([web.post('/', webhook)])
-
-    print("Бот запускается с вебхуками...")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path="",
-        webhook_url=f"{WEBHOOK_URL}"
-    )
-    web.run_app(web_app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
