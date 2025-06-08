@@ -63,7 +63,7 @@ def load_custom_categories(user_id: int) -> Dict[str, str]:
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT category, color FROM custom_categories WHERE user_id = ? ORDER BY timestamp DESC', (user_id,))
         rows = cursor.fetchall()
         conn.close()
         return {row[0]: row[1] for row in rows}
@@ -135,7 +135,7 @@ async def fetch_website_content(url: str) -> tuple[str, Dict[str, str]]:
         return f"Error: {str(e)}", {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.geply_text(
+    await update.message.reply_text(
         "Отправьте ссылку на сайт. Появятся кнопки категорий, чтобы открыть ссылку в мини-приложении. "
         "HTML и ресурсы сайта будут сохранены в кеш."
     )
@@ -166,25 +166,18 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     custom_categories = load_custom_categories(user_id)
     
     buttons = []
-    row = []
-    row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
-    buttons.append(row)
-
-    for category, color in custom_categories.items():
-        full_payload = f"{shared_url}|{category}|{color}"
-        encoded = urllib.parse.quote(full_payload, safe='')
-        button_url = f"https://sortik.app/?uploadnew={encoded}"
-        buttons.append([InlineKeyboardButton(category, web_app={"url": button_url})])
-
-    row = []
-    for idx, (category, color) in enumerate(default_categories.items(), 1):
+    row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
+    all_categories = {**custom_categories, **default_categories}
+    idx = 1
+    for category, color in all_categories.items():
         full_payload = f"{shared_url}|{category}|{color}"
         encoded = urllib.parse.quote(full_payload, safe='')
         button_url = f"https://sortik.app/?uploadnew={encoded}"
         row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-        if idx % 3 == 0 or idx == len(default_categories):
+        if len(row) == 3 or (idx == len(all_categories) and row):
             buttons.append(row)
             row = []
+        idx += 1
 
     reply_markup = InlineKeyboardMarkup(buttons)
     context.user_data['last_url_message'] = await update.message.reply_text(
@@ -276,25 +269,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             custom_categories = load_custom_categories(user_id)
             
             buttons = []
-            row = []
-            row.append(InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}"))
-            buttons.append(row)
-
-            for category, color in custom_categories.items():
-                full_payload = f"{shared_url}|{category}|{color}"
-                encoded = urllib.parse.quote(full_payload, safe='')
-                button_url = f"https://sortik.app/?uploadnew={encoded}"
-                buttons.append([InlineKeyboardButton(category, web_app={"url": button_url})])
-
-            row = []
-            for idx, (category, color) in enumerate(default_categories.items(), 1):
+            row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
+            all_categories = {**custom_categories, **default_categories}
+            idx = 1
+            for category, color in all_categories.items():
                 full_payload = f"{shared_url}|{category}|{color}"
                 encoded = urllib.parse.quote(full_payload, safe='')
                 button_url = f"https://sortik.app/?uploadnew={encoded}"
                 row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-                if idx % 3 == 0 or idx == len(default_categories):
+                if len(row) == 3 or (idx == len(all_categories) and row):
                     buttons.append(row)
                     row = []
+                idx += 1
 
             reply_markup = InlineKeyboardMarkup(buttons)
             context.user_data['last_url_message'] = await query.message.reply_text(
