@@ -127,11 +127,20 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons.append(row)
 
     for category, color in custom_categories.items():
-        buttons.append([InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}")])
+        # Ограничиваем длину callback_data, чтобы избежать ошибки Button_data_invalid
+        callback_data = f"assign|{shared_url}|{category}|{color}"
+        if len(callback_data.encode('utf-8')) > 64:
+            await update.message.reply_text("Ошибка: URL или категория слишком длинные. Попробуйте сократить.")
+            return
+        buttons.append([InlineKeyboardButton(category, callback_data=callback_data)])
 
     row = []
     for idx, (category, color) in enumerate(default_categories.items(), 1):
-        row.append(InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}"))
+        callback_data = f"assign|{shared_url}|{category}|{color}"
+        if len(callback_data.encode('utf-8')) > 64:
+            await update.message.reply_text("Ошибка: URL или категория слишком длинные. Попробуйте сократить.")
+            return
+        row.append(InlineKeyboardButton(category, callback_data=callback_data))
         if idx % 3 == 0 or idx == len(default_categories):
             buttons.append(row)
             row = []
@@ -236,11 +245,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buttons.append(row)
 
             for category, color in custom_categories.items():
-                buttons.append([InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}")])
+                callback_data = f"assign|{shared_url}|{category}|{color}"
+                if len(callback_data.encode('utf-8')) > 64:
+                    await query.message.reply_text("Ошибка: URL или категория слишком длинные. Попробуйте сократить.")
+                    return
+                buttons.append([InlineKeyboardButton(category, callback_data=callback_data)])
 
             row = []
             for idx, (category, color) in enumerate(default_categories.items(), 1):
-                row.append(InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}"))
+                callback_data = f"assign|{shared_url}|{category}|{color}"
+                if len(callback_data.encode('utf-8')) > 64:
+                    await query.message.reply_text("Ошибка: URL или категория слишком длинные. Попробуйте сократить.")
+                    return
+                row.append(InlineKeyboardButton(category, callback_data=callback_data))
                 if idx % 3 == 0 or idx == len(default_categories):
                     buttons.append(row)
                     row = []
@@ -272,11 +289,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append(row)
 
         for category, color in custom_categories.items():
-            buttons.append([InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}")])
+            callback_data = f"assign|{shared_url}|{category}|{color}"
+            if len(callback_data.encode('utf-8')) > 64:
+                await query.message.reply_text("Ошибка: URL или категория слишком длинные. Попробуйте сократить.")
+                return
+            buttons.append([InlineKeyboardButton(category, callback_data=callback_data)])
 
         row = []
         for idx, (category, color) in enumerate(default_categories.items(), 1):
-            row.append(InlineKeyboardButton(category, callback_data=f"assign|{shared_url}|{category}|{color}"))
+            callback_data = f"assign|{shared_url}|{category}|{color}"
+            if len(callback_data.encode('utf-8')) > 64:
+                await query.message.reply_text("Ошибка: URL или категория слишком длинные. Попробуйте сократить.")
+                return
+            row.append(InlineKeyboardButton(category, callback_data=callback_data))
             if idx % 3 == 0 or idx == len(default_categories):
                 buttons.append(row)
                 row = []
@@ -303,7 +328,8 @@ def main():
 
     print("Бот запущен...")
     try:
-        application.run_polling()
+        # Добавляем параметр drop_pending_updates=True для сброса ожидающих обновлений
+        application.run_polling(drop_pending_updates=True)
     except Exception as e:
         print(f"Ошибка при запуске бота: {e}")
         raise
