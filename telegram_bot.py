@@ -1,7 +1,6 @@
 import os
 import re
 import urllib.parse
-from typing import Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
@@ -23,6 +22,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     shared_url = urls[0]
     await update.message.delete()
+    context.user_data['current_url'] = shared_url
 
     default_categories = {
         "News": "blue",
@@ -34,13 +34,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     custom_categories = context.user_data.get('custom_categories', {})
     
     buttons = []
-    row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
+    row = [InlineKeyboardButton("+", callback_data="add_category")]
     all_categories = {**custom_categories, **default_categories}
     idx = 1
     for category, color in all_categories.items():
-        full_payload = f"{shared_url}|{category}|{color}"
+        full_payload = f"{category}|{color}"
         encoded = urllib.parse.quote(full_payload, safe='')
-        button_url = f"https://sortik.app/?uploadnew={encoded}"
+        button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
         row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
         if len(row) == 3 or (idx == len(all_categories) and row):
             buttons.append(row)
@@ -59,13 +59,16 @@ async def category_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del context.user_data['last_url_message']
     context.user_data['category_add_mode'] = True
     context.user_data['category_add_trigger'] = 'command'
-    await update.message.reply_text("Назовите новую категорию:")
+    context.user_data['category_name_message'] = await update.message.reply_text("Назовите новую категорию:")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('category_add_mode', False):
         new_category = update.message.text.strip()
         context.user_data['new_category'] = new_category
         await update.message.delete()
+        if 'category_name_message' in context.user_data:
+            await context.user_data['category_name_message'].delete()
+            del context.user_data['category_name_message']
         colors = ['red', 'blue', 'green', 'yellow', 'purple', 'pink', 'indigo', 'gray']
         buttons = []
         row = []
@@ -89,14 +92,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data.split('|')
     
     if data[0] == "add_category":
-        shared_url = data[1]
         if 'last_url_message' in context.user_data:
             await context.user_data['last_url_message'].delete()
             del context.user_data['last_url_message']
         context.user_data['category_add_mode'] = True
         context.user_data['category_add_trigger'] = 'button'
-        context.user_data['current_url'] = shared_url
-        await query.message.reply_text("Назовите новую категорию:")
+        context.user_data['category_name_message'] = await query.message.reply_text("Назовите новую категорию:")
     elif data[0] == "color":
         color = data[1]
         new_category = context.user_data.get('new_category')
@@ -117,13 +118,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Music": "purple"
             }
             buttons = []
-            row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
+            row = [InlineKeyboardButton("+", callback_data="add_category")]
             all_categories = {**custom_categories, **default_categories}
             idx = 1
             for category, color in all_categories.items():
-                full_payload = f"{shared_url}|{category}|{color}"
+                full_payload = f"{category}|{color}"
                 encoded = urllib.parse.quote(full_payload, safe='')
-                button_url = f"https://sortik.app/?uploadnew={encoded}"
+                button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
                 row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
                 if len(row) == 3 or (idx == len(all_categories) and row):
                     buttons.append(row)
