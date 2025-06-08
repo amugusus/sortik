@@ -13,23 +13,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Отправьте любую ссылку. Она будет удалена, и появятся кнопки категорий для выбора."
     )
 
-async def build_category_buttons(shared_url: str, custom_categories: Dict[str, str], default_categories: Dict[str, str]):
-    buttons = []
-    row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
-    # Объединяем категории, пользовательские идут в обратном порядке (новые сверху)
-    all_categories = list(custom_categories.items())[::-1] + list(default_categories.items())
-    idx = 1
-    for category, color in all_categories:
-        full_payload = f"{shared_url}|{category}|{color}"
-        encoded = urllib.parse.quote(full_payload, safe='')
-        button_url = f"https://sortik.app/?uploadnew={encoded}"
-        row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-        if len(row) == 3 or (idx == len(all_categories) and row):
-            buttons.append(row)
-            row = []
-        idx += 1
-    return InlineKeyboardMarkup(buttons)
-
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text
     urls = re.findall(URL_REGEX, message_text)
@@ -40,9 +23,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     shared_url = urls[0]
     await update.message.delete()
-    if 'last_url_message' in context.user_data:
-        await context.user_data['last_url_message'].delete()
-        del context.user_data['last_url_message']
 
     default_categories = {
         "News": "blue",
@@ -53,7 +33,21 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     custom_categories = context.user_data.get('custom_categories', {})
     
-    reply_markup = await build_category_buttons(shared_url, custom_categories, default_categories)
+    buttons = []
+    row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
+    all_categories = {**custom_categories, **default_categories}
+    idx = 1
+    for category, color in all_categories.items():
+        full_payload = f"{shared_url}|{category}|{color}"
+        encoded = urllib.parse.quote(full_payload, safe='')
+        button_url = f"https://sortik.app/?uploadnew={encoded}"
+        row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
+        if len(row) == 3 or (idx == len(all_categories) and row):
+            buttons.append(row)
+            row = []
+        idx += 1
+
+    reply_markup = InlineKeyboardMarkup(buttons)
     context.user_data['last_url_message'] = await update.message.reply_text(
         f"Ваша ссылка: {shared_url}\nВыберите категорию:",
         reply_markup=reply_markup
@@ -65,16 +59,13 @@ async def category_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del context.user_data['last_url_message']
     context.user_data['category_add_mode'] = True
     context.user_data['category_add_trigger'] = 'command'
-    context.user_data['category_prompt_message'] = await update.message.reply_text("Назовите новую категорию:")
+    await update.message.reply_text("Назовите новую категорию:")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('category_add_mode', False):
         new_category = update.message.text.strip()
         context.user_data['new_category'] = new_category
         await update.message.delete()
-        if 'category_prompt_message' in context.user_data:
-            await context.user_data['category_prompt_message'].delete()
-            del context.user_data['category_prompt_message']
         colors = ['red', 'blue', 'green', 'yellow', 'purple', 'pink', 'indigo', 'gray']
         buttons = []
         row = []
@@ -105,7 +96,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['category_add_mode'] = True
         context.user_data['category_add_trigger'] = 'button'
         context.user_data['current_url'] = shared_url
-        context.user_data['category_prompt_message'] = await query.message.reply_text("Назовите новую категорию:")
+        await query.message.reply_text("Назовите новую категорию:")
     elif data[0] == "color":
         color = data[1]
         new_category = context.user_data.get('new_category')
@@ -125,7 +116,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Sport": "red",
                 "Music": "purple"
             }
-            reply_markup = await build_category_buttons(shared_url, custom_categories, default_categories)
+            buttons = []
+            row = [InlineKeyboardButton("+", callback_data=f"add_category|{shared_url}")]
+            all_categories = {**custom_categories, **default_categories}
+            idx = 1
+            for category, color in all_categories.items():
+                full_payload = f"{shared_url}|{category}|{color}"
+                encoded = urllib.parse.quote(full_payload, safe='')
+                button_url = f"https://sortik.app/?uploadnew={encoded}"
+                row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
+                if len(row) == 3 or (idx == len(all_categories) and row):
+                    buttons.append(row)
+                    row = []
+                idx += 1
+
+            reply_markup = InlineKeyboardMarkup(buttons)
             context.user_data['last_url_message'] = await query.message.reply_text(
                 f"Ваша ссылка: {shared_url}\nВыберите категорию:",
                 reply_markup=reply_markup
