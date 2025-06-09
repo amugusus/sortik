@@ -3,7 +3,6 @@ import re
 import urllib.parse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from datetime import datetime
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 URL_REGEX = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
@@ -37,34 +36,21 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Sport": "red",
         "Music": "purple"
     }
-    custom_categories = context.user_data.get('custom_categories', [])
+    custom_categories = context.user_data.get('custom_categories', {})
     
     buttons = []
     row = [InlineKeyboardButton("+", callback_data="add_category")]
-    # Add custom categories in reverse order (newest to oldest)
-    for category, color, _ in custom_categories[::-1]:
-        full_payload = f"{category}|{color}"
-        encoded = urllib.parse.quote(full_payload, safe='')
-        button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
-        row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-        if len(row) == 3:
-            buttons.append(row)
-            row = []
-    
-    # Add default categories
+    all_categories = {**custom_categories, **default_categories}
     idx = 1
-    for category, color in default_categories.items():
+    for category, color in all_categories.items():
         full_payload = f"{category}|{color}"
         encoded = urllib.parse.quote(full_payload, safe='')
         button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
         row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-        if len(row) == 3 or (idx == len(default_categories) and row):
+        if len(row) == 3 or (idx == len(all_categories) and row):
             buttons.append(row)
             row = []
         idx += 1
-
-    if row:  # Add any remaining buttons
-        buttons.append(row)
 
     reply_markup = InlineKeyboardMarkup(buttons)
     context.user_data['last_url_message'] = await update.message.reply_text(
@@ -122,8 +108,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_category = context.user_data.get('new_category')
         shared_url = context.user_data.get('current_url')
         if new_category and shared_url:
-            custom_categories = context.user_data.get('custom_categories', [])
-            custom_categories.append((new_category, color, datetime.now().isoformat()))
+            custom_categories = context.user_data.get('custom_categories', {})
+            custom_categories[new_category] = color
             context.user_data['custom_categories'] = custom_categories
             if 'category_color_message' in context.user_data:
                 await context.user_data['category_color_message'].delete()
@@ -138,30 +124,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
             buttons = []
             row = [InlineKeyboardButton("+", callback_data="add_category")]
-            # Add custom categories in reverse order (newest to oldest)
-            for category, color, _ in custom_categories[::-1]:
-                full_payload = f"{category}|{color}"
-                encoded = urllib.parse.quote(full_payload, safe='')
-                button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
-                row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-                if len(row) == 3:
-                    buttons.append(row)
-                    row = []
-            
-            # Add default categories
+            all_categories = {**custom_categories, **default_categories}
             idx = 1
-            for category, color in default_categories.items():
+            for category, color in all_categories.items():
                 full_payload = f"{category}|{color}"
                 encoded = urllib.parse.quote(full_payload, safe='')
                 button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
                 row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-                if len(row) == 3 or (idx == len(default_categories) and row):
+                if len(row) == 3 or (idx == len(all_categories) and row):
                     buttons.append(row)
                     row = []
                 idx += 1
-
-            if row:  # Add any remaining buttons
-                buttons.append(row)
 
             reply_markup = InlineKeyboardMarkup(buttons)
             context.user_data['last_url_message'] = await query.message.reply_text(
@@ -175,7 +148,7 @@ def main():
 
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("categoryadd", category Oncology))
+    application.add_handler(CommandHandler("categoryadd", category_add))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback))
 
