@@ -40,14 +40,24 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     buttons = []
     row = [InlineKeyboardButton("+", callback_data="add_category")]
-    all_categories = {**custom_categories, **default_categories}
+    custom_list = list(custom_categories.items())
+    custom_list.reverse()  # Reverse to add newest last to first
     idx = 1
-    for category, color in all_categories.items():
+    for category, color in custom_list:
         full_payload = f"{category}|{color}"
         encoded = urllib.parse.quote(full_payload, safe='')
         button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
         row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-        if len(row) == 3 or (idx == len(all_categories) and row):
+        if len(row) == 3 or (idx == len(custom_categories) and row):
+            buttons.append(row)
+            row = []
+        idx += 1
+    for category, color in default_categories.items():
+        full_payload = f"{category}|{color}"
+        encoded = urllib.parse.quote(full_payload, safe='')
+        button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
+        row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
+        if len(row) == 3 or (idx == len(custom_categories) + len(default_categories) and row):
             buttons.append(row)
             row = []
         idx += 1
@@ -124,14 +134,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
             buttons = []
             row = [InlineKeyboardButton("+", callback_data="add_category")]
-            all_categories = {**custom_categories, **default_categories}
+            custom_list = list(custom_categories.items())
+            custom_list.reverse()  # Reverse to add newest last to first
             idx = 1
-            for category, color in all_categories.items():
+            for category, color in custom_list:
                 full_payload = f"{category}|{color}"
                 encoded = urllib.parse.quote(full_payload, safe='')
                 button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
                 row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
-                if len(row) == 3 or (idx == len(all_categories) and row):
+                if len(row) == 3 or (idx == len(custom_categories) and row):
+                    buttons.append(row)
+                    row = []
+                idx += 1
+            for category, color in default_categories.items():
+                full_payload = f"{category}|{color}"
+                encoded = urllib.parse.quote(full_payload, safe='')
+                button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
+                row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
+                if len(row) == 3 or (idx == len(custom_categories) + len(default_categories) and row):
                     buttons.append(row)
                     row = []
                 idx += 1
