@@ -8,8 +8,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 URL_REGEX = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Отправьте любую ссылку. Она будет удалена, и появятся кнопки категорий для выбора."
+    video_url = "https://github.com/amugusus/sortik/raw/main/sortik.mp4"
+    await update.message.reply_video(
+        video=video_url,
+        caption="Пришлите ссылки для сортировки)"
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -22,6 +24,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     shared_url = urls[0]
     await update.message.delete()
+    if 'last_url_message' in context.user_data:
+        await context.user_data['last_url_message'].delete()
+        del context.user_data['last_url_message']
     context.user_data['current_url'] = shared_url
 
     default_categories = {
