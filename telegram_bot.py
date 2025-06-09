@@ -41,11 +41,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = []
     row = [InlineKeyboardButton("+", callback_data="add_category")]
     all_categories = {**custom_categories, **default_categories}
+    sorted_categories = dict(sorted(all_categories.items(), key=lambda x: x[0]))
     idx = 1
-    for category, color in all_categories.items():
-        full_payload = f"{category}|{color}"
-        encoded = urllib.parse.quote(full_payload, safe='')
-        button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
+    for category, color in sorted_categories.items():
+        button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{urllib.parse.quote(category, safe='')}|{urllib.parse.quote(color, safe='')}"
         row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
         if len(row) == 3 or (idx == len(all_categories) and row):
             buttons.append(row)
@@ -125,11 +124,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buttons = []
             row = [InlineKeyboardButton("+", callback_data="add_category")]
             all_categories = {**custom_categories, **default_categories}
+            sorted_categories = dict(sorted(all_categories.items(), key=lambda x: x[0]))
             idx = 1
-            for category, color in all_categories.items():
-                full_payload = f"{category}|{color}"
-                encoded = urllib.parse.quote(full_payload, safe='')
-                button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
+            for category, color in sorted_categories.items():
+                button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{urllib.parse.quote(category, safe='')}|{urllib.parse.quote(color, safe='')}"
                 row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
                 if len(row) == 3 or (idx == len(all_categories) and row):
                     buttons.append(row)
