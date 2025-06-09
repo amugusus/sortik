@@ -45,8 +45,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for category, color in all_categories.items():
         full_payload = f"{category}|{color}"
         encoded = urllib.parse.quote(full_payload, safe='')
-        button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}&fullscreen=true"
-        row.append(InlineKeyboardButton(category, web_app={"url": button_url, "request_fullscreen": True}))
+        button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
+        row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
         if len(row) == 3 or (idx == len(all_categories) and row):
             buttons.append(row)
             row = []
@@ -129,8 +129,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for category, color in all_categories.items():
                 full_payload = f"{category}|{color}"
                 encoded = urllib.parse.quote(full_payload, safe='')
-                button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}&fullscreen=true"
-                row.append(InlineKeyboardButton(category, web_app={"url": button_url, "request_fullscreen": True}))
+                button_url = f"https://sortik.app/?uploadnew={urllib.parse.quote(shared_url, safe='')}|{encoded}"
+                row.append(InlineKeyboardButton(category, web_app={"url": button_url}))
                 if len(row) == 3 or (idx == len(all_categories) and row):
                     buttons.append(row)
                     row = []
